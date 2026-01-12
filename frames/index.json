@@ -395,12 +395,14 @@
   "gpxFiles": [
     "senterra1.gpx",
     "senterra2.gpx",
-    "senterra3.gpx"
+    "senterra3.gpx",
+    "senterra4.gpx"
   ],
   "yawfixes": {
     "senterra1.gpx": 180,
     "senterra2.gpx": 180,
-    "senterra3.gpx": 180
+    "senterra3.gpx": 180,
+    "senterra4.gpx": 180
   },
   "marriages": [
     [
@@ -414,6 +416,10 @@
     [
       "senterra2.gpx:10",
       "senterra3.gpx:0"
+    ],
+    [
+      "senterra3.gpx:153",
+      "senterra4.gpx:0"
     ]
   ]
 }
