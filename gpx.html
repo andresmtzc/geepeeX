@@ -1148,7 +1148,7 @@ function parseWaypointsFromGPX(gpxDoc, trackData) {
         
         // USE EXACT POSITION - don't recalculate based on track
         const marble = {
-            id: Date.now() + index,
+            id: `${trackData.name}-${index}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
             index: trackData.marbles.length,
             position: [lon, lat], // This is the exact exported position
             distanceAlongRoute: 0, // We'll set this below
@@ -2302,7 +2302,7 @@ function handlePointDrag(e) {
         const position = findPositionAtDistance(coordinates, targetDistance);
         
         track.marbles.push({
-            id: Date.now() + i,
+            id: `${track.name}-${i}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
             index: i,
             position: position,
             distanceAlongRoute: targetDistance,
@@ -2358,7 +2358,7 @@ function addMarble() {
     const safeDistance = Math.min(newDistance, totalDistance);
     
     const newMarble = {
-        id: Date.now(),
+        id: `${track.name}-${marbles.length}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
         index: marbles.length,
         position: findPositionAtDistance(coordinates, safeDistance),
         distanceAlongRoute: safeDistance,
