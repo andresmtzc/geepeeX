@@ -190,10 +190,6 @@
       <trkpt lat="25.150040" lon="-99.953498"></trkpt>
     </trkseg>
   </trk>
-  <wpt lat="NaN" lon="NaN">
-    <name>Photo_1 - Image 1 - Image 1</name>
-    <desc>Marble position along route - Image 1</desc>
-  </wpt>
   <wpt lat="25.147425" lon="-99.949404">
     <name>Photo_2 - Image 2 - Image 2</name>
     <desc>Marble position along route - Image 2</desc>
