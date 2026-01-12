@@ -3676,6 +3676,11 @@ function applyImageToSphere(img, imageData) {
     });
     
     sphere = new THREE.Mesh(geometry, material);
+
+    // Apply the current orientation to the sphere (matching gpxviewer.html)
+    sphere.rotation.y = currentYaw;
+    sphere.rotation.x = currentPitch;
+
     panoGroup.add(sphere);
 
         // KEEP current orientation - don't reset!
@@ -3857,7 +3862,8 @@ function updateViewCone() {
     const currentIndex = track.marbles.findIndex(m => m.id === selectedMarbleId);
     
     // 1. GET PATH DIRECTION (base bearing)
-    let pathBearing = 0;
+    let pathBearing = track._lastPathBearing || 0; // keep last good direction as fallback
+
     if (currentIndex < track.marbles.length - 1) {
         const nextMarble = track.marbles[currentIndex + 1];
         const dx = nextMarble.position[0] - marble.position[0];
@@ -3865,10 +3871,19 @@ function updateViewCone() {
         pathBearing = (Math.atan2(dx, dy) * 180 / Math.PI + 360) % 360;
     } else if (currentIndex > 0) {
         const prevMarble = track.marbles[currentIndex - 1];
-        const dx = prevMarble.position[0] - marble.position[0];
-        const dy = prevMarble.position[1] - marble.position[1];
+        const dx = marble.position[0] - prevMarble.position[0]; // invert vector so it still points forward
+        const dy = marble.position[1] - prevMarble.position[1];
         pathBearing = (Math.atan2(dx, dy) * 180 / Math.PI + 360) % 360;
     }
+
+    // smooth continuity near endpoints (avoid 180° flip)
+    if (track._lastPathBearing !== undefined) {
+        const diff = pathBearing - track._lastPathBearing;
+        if (Math.abs(diff) > 180) {
+            pathBearing += diff > 0 ? -360 : 360;
+        }
+    }
+    track._lastPathBearing = pathBearing;
 
     // 2. GET USER OFFSET (convert yaw to degrees and apply to path)
     const userYawDeg = THREE.MathUtils.radToDeg(currentYaw);
