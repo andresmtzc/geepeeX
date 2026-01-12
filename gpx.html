@@ -537,6 +537,37 @@
         </div>
     </div>
 
+    <!-- Marriage Controls -->
+    <div class="control-group">
+        <div class="slider-label">
+            <span>Marble Marriages:</span>
+            <small id="marriage-count">0 groups</small>
+        </div>
+        <div style="display:flex;gap:5px;margin:4px 0;flex-wrap:wrap;">
+            <button onclick="toggleMarryMode()" id="marry-mode-btn" style="flex:1;">Marry Mode: OFF</button>
+            <button onclick="marrySelected()" id="marry-btn" style="flex:1;" disabled>Marry Selected</button>
+        </div>
+        <div style="display:flex;gap:5px;margin:4px 0;">
+            <button onclick="divorceSelectedMarble()" id="divorce-btn" style="flex:1;" disabled>Divorce Selected</button>
+            <button onclick="clearAllMarriages()" style="flex:1;">Clear All</button>
+        </div>
+        <div id="marry-selection-info" style="font-size:11px;color:#666;margin-top:4px;display:none;">
+            Selected for marriage: <span id="marry-selection-count">0</span> marbles
+        </div>
+    </div>
+
+    <!-- Index JSON Controls -->
+    <div class="control-group">
+        <div class="slider-label"><span>Index JSON:</span></div>
+        <div style="display:flex;gap:5px;margin:4px 0;">
+            <button onclick="exportIndexJson()" style="flex:1;">Export JSON</button>
+            <div class="file-input-container" style="flex:1;">
+                <button style="width:100%;">Import JSON</button>
+                <input type="file" id="import-json-input" accept=".json" onchange="importIndexJson(this.files[0])">
+            </div>
+        </div>
+    </div>
+
     <div class="status" id="status">Ready - Load GPX files to start</div>
 </div>
 
@@ -618,6 +649,11 @@ let lastHopBearingDeg = null; // optional bias to "keep going straight"
     let dragMarbleIndex = -1;
     let selectedMarbleId = null;
 
+    // Marriage system variables
+    let marriageGroups = []; // Array of arrays: [["senterra1.gpx:15", "senterra2.gpx:42"], ...]
+    let marryModeActive = false;
+    let marrySelection = new Set(); // Set of marble IDs currently selected for marriage
+
     // 360 Viewer variables
     let viewer;
     let currentImages = [];
@@ -630,6 +666,22 @@ let lastHopBearingDeg = null; // optional bias to "keep going straight"
     const trackColors = [
         '#EA4335', '#4285F4', '#34A853', '#FBBC05', '#FF6D01',
         '#46BDC6', '#9334E6', '#E67C73', '#109D58', '#3F51B5'
+    ];
+
+    // Color palette for marriage groups (distinct, visible colors)
+    const marriageColors = [
+        '#FF00FF', // Magenta
+        '#00FFFF', // Cyan
+        '#FFD700', // Gold
+        '#FF1493', // DeepPink
+        '#00FF7F', // SpringGreen
+        '#FF4500', // OrangeRed
+        '#9400D3', // DarkViolet
+        '#00CED1', // DarkTurquoise
+        '#FF69B4', // HotPink
+        '#32CD32', // LimeGreen
+        '#FF6347', // Tomato
+        '#4169E1', // RoyalBlue
     ];
 
     // Initialize map and viewer
@@ -725,26 +777,36 @@ function initializeApp() {
                 paint: {
                     'circle-radius': ['case',
                         ['==', ['get', 'isDragging'], true], 7,
+                        ['==', ['get', 'isMarrySelected'], true], 8, // Larger when selected for marriage
                         ['==', ['get', 'isSelected'], true], 6,
+                        ['==', ['get', 'isMarried'], true], 6, // Married marbles are larger
                         ['==', ['get', 'isFixed'], true], 5,
                         ['==', ['get', 'isLocked'], true], 4.5,
-                        ['==', ['get', 'hasImage'], true], 2, // Larger for marbles with images
-                        4 // Smaller for marbles without images
+                        ['==', ['get', 'hasImage'], true], 2,
+                        4
                     ],
                     'circle-color': ['case',
                         ['==', ['get', 'isDragging'], true], '#FFD700',
+                        ['==', ['get', 'isMarrySelected'], true], '#00FFFF', // Cyan when selected for marriage
                         ['==', ['get', 'isSelected'], true], '#ff8400',
+                        ['==', ['get', 'isMarried'], true], ['get', 'marriageColor'], // Use marriage group color
                         ['==', ['get', 'isFixed'], true], '#FF0000',
                         ['==', ['get', 'isLocked'], true], '#FF6B35',
-                        ['==', ['get', 'hasImage'], true], 'rgba(52, 168, 83, 0)', // GREEN for marbles with images
-                        '#8B4513' // Brown for marbles without images
+                        ['==', ['get', 'hasImage'], true], 'rgba(52, 168, 83, 0)',
+                        '#8B4513'
                     ],
                     'circle-stroke-width': ['case',
+                        ['==', ['get', 'isMarrySelected'], true], 3, // Thick stroke when selected for marriage
+                        ['==', ['get', 'isMarried'], true], 2, // Stroke for married marbles
                         ['==', ['get', 'isSelected'], true], 0,
-                        ['==', ['get', 'hasImage'], true], 1, // Thin stroke for marbles with images
+                        ['==', ['get', 'hasImage'], true], 1,
                         0
                     ],
-                    'circle-stroke-color': '#FFFFFF'
+                    'circle-stroke-color': ['case',
+                        ['==', ['get', 'isMarrySelected'], true], '#FFFFFF',
+                        ['==', ['get', 'isMarried'], true], '#FFFFFF',
+                        '#FFFFFF'
+                    ]
                 }
             });
 
@@ -887,7 +949,18 @@ async function loadGPXFromManifest() {
         
         const manifest = await res.json();
         console.log('Manifest loaded:', manifest);
-        
+
+        // Store files array for export
+        if (manifest.files) {
+            window.loadedManifestFiles = manifest.files;
+        }
+
+        // Load marriages if present
+        if (manifest.marriages && Array.isArray(manifest.marriages)) {
+            marriageGroups = manifest.marriages;
+            console.log('Loaded marriages:', marriageGroups);
+        }
+
         let gpxFiles = [];
         
         // Your manifest has BOTH files and gpxFiles arrays
@@ -2564,13 +2637,19 @@ function handleMarbleClick(e) {
     if (e.features.length > 0) {
         const marbleId = e.features[0].properties.id;
         const trackId = e.features[0].properties.trackId; // Get the track ID
-        
+
         // If Ctrl/Cmd click, toggle lock
         if (e.originalEvent.ctrlKey || e.originalEvent.metaKey) {
             toggleMarbleLock(marbleId);
             return;
         }
-        
+
+        // MARRY MODE: Add/remove from marriage selection
+        if (marryModeActive) {
+            toggleMarrySelection(marbleId);
+            return;
+        }
+
         // CHECK IF WE NEED TO SWITCH TRACKS
         if (trackId !== currentTrackId) {
             // Switch to the marble's track first
@@ -2942,14 +3021,17 @@ function selectMarble(marbleId) {
 function updateMarbleDisplay() {
     // COLLECT MARBLES FROM ALL TRACKS
     const allMarbles = [];
-    
+
     allTracks.forEach((track, trackId) => {
         track.marbles.forEach((marble, index) => {
             const hasImage = marble.assignedImage !== null;
             const imageIndex = hasImage ? marble.assignedImage + 1 : 0;
             const isWaypoint = marble.isWaypoint || false;
             const isFromCurrentTrack = (trackId === currentTrackId);
-            
+
+            // Get marriage info for this marble
+            const marriageInfo = getMarbleMarriageInfo(marble.id, track.name);
+
             allMarbles.push({
                 type: 'Feature',
                 geometry: {
@@ -2967,37 +3049,45 @@ function updateMarbleDisplay() {
                     hasImage: hasImage,
                     imageIndex: imageIndex,
                     isWaypoint: isWaypoint,
-                    isFromCurrentTrack: isFromCurrentTrack, // Highlight current track marbles
+                    isFromCurrentTrack: isFromCurrentTrack,
                     originalName: marble.originalName || '',
                     position: `${index + 1}/${track.marbles.length}`,
                     distance: `${Math.round(marble.distanceAlongRoute)}m`,
                     name: isWaypoint ? (marble.originalName || `Waypoint ${index + 1}`) : `Marble ${index + 1}`,
-                    trackName: track.name // Include track name for tooltips
+                    trackName: track.name,
+                    // Marriage properties
+                    isMarrySelected: marrySelection.has(marble.id),
+                    isMarried: marriageInfo.isMarried,
+                    marriageColor: marriageInfo.color,
+                    marriageGroupIndex: marriageInfo.groupIndex
                 }
             });
         });
     });
-    
+
     // UPDATE THE SOURCE WITH ALL MARBLES
     map.getSource('marbles').setData({
         type: 'FeatureCollection',
         features: allMarbles
     });
-     
+
     // Update marble count for ALL tracks
     let totalMarbles = 0;
     let totalWithImages = 0;
     let totalWaypoints = 0;
-    
+
     allTracks.forEach(track => {
         totalMarbles += track.marbles.length;
         totalWithImages += track.marbles.filter(m => m.assignedImage !== null).length;
         totalWaypoints += track.marbles.filter(m => m.isWaypoint).length;
     });
-    
-    document.getElementById('marble-count').textContent = 
+
+    document.getElementById('marble-count').textContent =
         `${totalMarbles} marbles across ${allTracks.size} tracks (${totalWaypoints} waypoints, ${totalWithImages} with images)`;
-    
+
+    // Update marriage count
+    document.getElementById('marriage-count').textContent = `${marriageGroups.length} groups`;
+
     enableMarbleDragging();
 }
 
@@ -4479,10 +4569,323 @@ function showImage(index) {
     // This is called by the old viewer controls, redirect to new system
     showImageByIndex(index);
 }
-  
 
-  
-   
+// ===== MARRIAGE SYSTEM FUNCTIONS =====
+
+// Get marble identifier string for storage (gpxName:marbleIndex)
+function getMarbleIdentifier(marbleId) {
+    for (const [trackId, track] of allTracks) {
+        const marbleIndex = track.marbles.findIndex(m => m.id === marbleId);
+        if (marbleIndex !== -1) {
+            return `${track.name}.gpx:${marbleIndex}`;
+        }
+    }
+    return null;
+}
+
+// Find marble by identifier string
+function findMarbleByIdentifier(identifier) {
+    const [gpxName, indexStr] = identifier.split(':');
+    const index = parseInt(indexStr);
+
+    for (const [trackId, track] of allTracks) {
+        // Match by track name (with or without .gpx extension)
+        const trackName = track.name.replace(/\.gpx$/i, '');
+        const searchName = gpxName.replace(/\.gpx$/i, '');
+
+        if (trackName === searchName && track.marbles[index]) {
+            return { marble: track.marbles[index], track, trackId };
+        }
+    }
+    return null;
+}
+
+// Get marriage info for a marble
+function getMarbleMarriageInfo(marbleId, trackName) {
+    const identifier = `${trackName}.gpx:${getMarbleIndexById(marbleId, trackName)}`;
+
+    for (let i = 0; i < marriageGroups.length; i++) {
+        if (marriageGroups[i].includes(identifier)) {
+            return {
+                isMarried: true,
+                groupIndex: i,
+                color: marriageColors[i % marriageColors.length]
+            };
+        }
+    }
+
+    return { isMarried: false, groupIndex: -1, color: '#8B4513' };
+}
+
+// Get marble index by ID within a track
+function getMarbleIndexById(marbleId, trackName) {
+    for (const [trackId, track] of allTracks) {
+        if (track.name === trackName) {
+            return track.marbles.findIndex(m => m.id === marbleId);
+        }
+    }
+    return -1;
+}
+
+// Toggle marry mode
+function toggleMarryMode() {
+    marryModeActive = !marryModeActive;
+    const btn = document.getElementById('marry-mode-btn');
+    const info = document.getElementById('marry-selection-info');
+
+    if (marryModeActive) {
+        btn.textContent = 'Marry Mode: ON';
+        btn.classList.add('active');
+        info.style.display = 'block';
+        marrySelection.clear();
+        updateMarrySelectionUI();
+        setStatus('Marry Mode ON - Click marbles to select for marriage');
+    } else {
+        btn.textContent = 'Marry Mode: OFF';
+        btn.classList.remove('active');
+        info.style.display = 'none';
+        marrySelection.clear();
+        setStatus('Marry Mode OFF');
+    }
+
+    updateMarbleDisplay();
+}
+
+// Toggle marble selection for marriage
+function toggleMarrySelection(marbleId) {
+    if (marrySelection.has(marbleId)) {
+        marrySelection.delete(marbleId);
+    } else {
+        marrySelection.add(marbleId);
+    }
+
+    updateMarrySelectionUI();
+    updateMarbleDisplay();
+}
+
+// Update marry selection UI
+function updateMarrySelectionUI() {
+    const countEl = document.getElementById('marry-selection-count');
+    const marryBtn = document.getElementById('marry-btn');
+
+    countEl.textContent = marrySelection.size;
+    marryBtn.disabled = marrySelection.size < 2;
+
+    if (marrySelection.size >= 2) {
+        marryBtn.classList.add('active');
+    } else {
+        marryBtn.classList.remove('active');
+    }
+}
+
+// Marry selected marbles
+function marrySelected() {
+    if (marrySelection.size < 2) {
+        setStatus('Select at least 2 marbles to marry');
+        return;
+    }
+
+    // Convert marble IDs to identifiers
+    const identifiers = [];
+    for (const marbleId of marrySelection) {
+        const identifier = getMarbleIdentifier(marbleId);
+        if (identifier) {
+            identifiers.push(identifier);
+        }
+    }
+
+    if (identifiers.length < 2) {
+        setStatus('Could not identify marbles for marriage');
+        return;
+    }
+
+    // Check if any of these marbles are already married
+    for (const identifier of identifiers) {
+        for (const group of marriageGroups) {
+            if (group.includes(identifier)) {
+                setStatus(`Marble ${identifier} is already married. Divorce first.`);
+                return;
+            }
+        }
+    }
+
+    // Create new marriage group
+    marriageGroups.push(identifiers);
+
+    // Clear selection and update UI
+    marrySelection.clear();
+    updateMarrySelectionUI();
+    updateMarbleDisplay();
+    updateDivorceButton();
+
+    setStatus(`Married ${identifiers.length} marbles (Group ${marriageGroups.length})`);
+}
+
+// Divorce selected marble
+function divorceSelectedMarble() {
+    if (!selectedMarbleId) {
+        setStatus('Select a married marble first');
+        return;
+    }
+
+    const identifier = getMarbleIdentifier(selectedMarbleId);
+    if (!identifier) {
+        setStatus('Could not identify marble');
+        return;
+    }
+
+    // Find and remove from marriage group
+    for (let i = 0; i < marriageGroups.length; i++) {
+        const groupIndex = marriageGroups[i].indexOf(identifier);
+        if (groupIndex !== -1) {
+            marriageGroups[i].splice(groupIndex, 1);
+
+            // If group has less than 2 members, dissolve it
+            if (marriageGroups[i].length < 2) {
+                marriageGroups.splice(i, 1);
+                setStatus(`Divorced marble and dissolved group (was only 1 left)`);
+            } else {
+                setStatus(`Divorced marble from group ${i + 1}`);
+            }
+
+            updateMarbleDisplay();
+            updateDivorceButton();
+            return;
+        }
+    }
+
+    setStatus('Marble is not married');
+}
+
+// Clear all marriages
+function clearAllMarriages() {
+    if (marriageGroups.length === 0) {
+        setStatus('No marriages to clear');
+        return;
+    }
+
+    if (confirm(`Clear all ${marriageGroups.length} marriage groups?`)) {
+        marriageGroups = [];
+        updateMarbleDisplay();
+        updateDivorceButton();
+        setStatus('All marriages cleared');
+    }
+}
+
+// Update divorce button state based on selected marble
+function updateDivorceButton() {
+    const divorceBtn = document.getElementById('divorce-btn');
+
+    if (!selectedMarbleId) {
+        divorceBtn.disabled = true;
+        return;
+    }
+
+    const identifier = getMarbleIdentifier(selectedMarbleId);
+    if (!identifier) {
+        divorceBtn.disabled = true;
+        return;
+    }
+
+    // Check if marble is married
+    for (const group of marriageGroups) {
+        if (group.includes(identifier)) {
+            divorceBtn.disabled = false;
+            return;
+        }
+    }
+
+    divorceBtn.disabled = true;
+}
+
+// Export index.json with all data including marriages
+function exportIndexJson() {
+    // Collect all image files
+    const allFiles = [];
+    const gpxFiles = [];
+    const yawfixes = {};
+
+    allTracks.forEach((track, trackId) => {
+        const gpxName = track.name.endsWith('.gpx') ? track.name : `${track.name}.gpx`;
+        gpxFiles.push(gpxName);
+
+        if (track.yawFixDeg) {
+            yawfixes[gpxName] = track.yawFixDeg;
+        }
+    });
+
+    // Build the export object
+    const exportData = {
+        files: allFiles, // Will be populated from existing manifest or empty
+        gpxFiles: gpxFiles,
+        yawfixes: yawfixes,
+        marriages: marriageGroups
+    };
+
+    // Try to preserve existing files array from loaded manifest
+    if (window.loadedManifestFiles) {
+        exportData.files = window.loadedManifestFiles;
+    }
+
+    const jsonString = JSON.stringify(exportData, null, 2);
+    const blob = new Blob([jsonString], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'index.json';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    setStatus(`Exported index.json with ${marriageGroups.length} marriage groups`);
+}
+
+// Import index.json
+function importIndexJson(file) {
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = function(e) {
+        try {
+            const data = JSON.parse(e.target.result);
+
+            // Load marriages
+            if (data.marriages && Array.isArray(data.marriages)) {
+                marriageGroups = data.marriages;
+                setStatus(`Imported ${marriageGroups.length} marriage groups`);
+            } else {
+                marriageGroups = [];
+                setStatus('Imported JSON (no marriages found)');
+            }
+
+            // Store files for later export
+            if (data.files) {
+                window.loadedManifestFiles = data.files;
+            }
+
+            updateMarbleDisplay();
+            updateDivorceButton();
+
+        } catch (err) {
+            console.error('Error parsing JSON:', err);
+            setStatus('Error parsing JSON file');
+        }
+    };
+
+    reader.readAsText(file);
+
+    // Reset the input so the same file can be selected again
+    document.getElementById('import-json-input').value = '';
+}
+
+// Hook into selectMarble to update divorce button
+const originalSelectMarble = selectMarble;
+selectMarble = function(marbleId) {
+    originalSelectMarble(marbleId);
+    updateDivorceButton();
+};
 
     // Initialize the application
     initializeApp();

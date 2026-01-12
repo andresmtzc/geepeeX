@@ -120,6 +120,14 @@ display:none;
 <div id="map"></div>
 <div id="status">Loading…</div>
 
+<!-- Load JSON Button -->
+<div id="json-loader" style="position:absolute;bottom:10px;left:10px;z-index:100;">
+  <label style="display:inline-block;padding:8px 12px;background:rgba(0,0,0,0.7);color:#fff;border-radius:6px;cursor:pointer;font-size:12px;">
+    Load JSON
+    <input type="file" id="load-json-input" accept=".json" style="display:none;" onchange="loadJsonFile(this.files[0])">
+  </label>
+</div>
+
 <script>
 /* =============================== */
 /*            CONSTANTS            */
@@ -148,6 +156,9 @@ let currentImageIndex = -1;
 let preloadedImages = {};
 
 let viewConeMarker = null;
+
+// Marriage system
+let marriageGroups = []; // Array of arrays: [["senterra1.gpx:15", "senterra2.gpx:42"], ...]
 
 /* =============================== */
 /*              INIT               */
@@ -260,6 +271,12 @@ async function loadGPXFromManifest() {
     window.yawFixesByFile = manifest.yawfixes || {};
     console.log("Yaw fixes loaded:", window.yawFixesByFile);
 
+    // Load marriages if present
+    if (manifest.marriages && Array.isArray(manifest.marriages)) {
+      marriageGroups = manifest.marriages;
+      console.log("Marriages loaded:", marriageGroups);
+    }
+
     // Existing logic for gpx file list
     let gpxFiles = [];
     if (manifest.gpxFiles && manifest.gpxFiles.length) gpxFiles = manifest.gpxFiles;
@@ -281,6 +298,11 @@ async function loadGPXFromManifest() {
       const firstTrackId = Array.from(allTracks.keys())[0];
       selectTrack(firstTrackId);
       const track = allTracks.get(firstTrackId);
+
+      // Preload images for married marbles after tracks are loaded
+      if (marriageGroups.length > 0) {
+        setTimeout(() => preloadMarriedMarbleImages(), 500);
+      }
     }
 
   } catch(e) {
@@ -841,18 +863,21 @@ function animateViewer(){
 
 function shouldShowBranchAtBottom() {
   if (!selectedMarbleId) return false;
-  
+
+  // If marble has married partners, show branch at bottom
+  if (hasMarriedPartners(selectedMarbleId)) return true;
+
   const track = getCurrentTrack();
   if (!track) return false;
-  
+
   const marbleIndex = track.marbles.findIndex(m => m.id === selectedMarbleId);
   const isEndpoint = marbleIndex === 0 || marbleIndex === track.marbles.length - 1;
-  
+
   if (!isEndpoint) return false;
-  
+
   // Check if there are ANY nearby marbles that represent alternative paths
   const edges = navGraph.get(selectedMarbleId) || [];
-  
+
   // For endpoints, we want to show branch at bottom if there are ANY connections
   // that aren't just the single sequential connection
   if (isEndpoint) {
@@ -860,7 +885,7 @@ function shouldShowBranchAtBottom() {
     // If we're at end (last index), the normal connection is to previous index
     const normalConnectionIndex = marbleIndex === 0 ? 1 : marbleIndex - 1;
     const normalConnectionMarble = track.marbles[normalConnectionIndex];
-    
+
     // Count connections that aren't the normal sequential one
     const alternativeConnections = edges.filter(edge => {
       return edge.toMarbleId !== normalConnectionMarble?.id;
@@ -918,10 +943,14 @@ function updateNavigationRing(instant = false) {
   const isEndpoint = marbleIndex === 0 || marbleIndex === total - 1;
   const totalConnections = edges.length;
 
+  // Check for married partners (priority)
+  const hasMarriage = hasMarriedPartners(selectedMarbleId);
+
   // Branch button active if:
+  //  - has married partners (highest priority)
   //  - endpoint and at least 2 total connections (fork at end)
   //  - OR any node with more than 2 connections (true junction)
-  canBranch = (isEndpoint && totalConnections >= 2) || totalConnections > 2;
+  canBranch = hasMarriage || (isEndpoint && totalConnections >= 2) || totalConnections > 2;
 
   // --- Branch positioning logic ---
   const showBranchAtBottom = shouldShowBranchAtBottom();
@@ -954,10 +983,33 @@ function updateNavigationRing(instant = false) {
 
 document.getElementById('branchImageBtn').addEventListener('click', async () => {
   if (!selectedMarbleId) return;
+
+  // First check for married partners (priority over nearby marbles)
+  const marriedPartners = getMarriedPartners(selectedMarbleId);
+
+  if (marriedPartners.length > 0) {
+    // Jump to first married partner (or cycle through if multiple)
+    const target = marriedPartners[0];
+    const targetTrack = target.track;
+    const targetMarble = target.marble;
+
+    if (targetTrack.id !== currentTrackId) {
+      selectTrackWithoutMapReset(targetTrack.id);
+      await new Promise(r => setTimeout(r, 100));
+    }
+    selectMarble(targetMarble.id);
+    if (targetMarble.assignedImage != null) showMarbleImage(targetMarble.id);
+    else map.flyTo({ center: targetMarble.position, zoom: map.getZoom(), duration: 800 });
+
+    setStatus(`Jumped to married partner on ${targetTrack.name}`);
+    return;
+  }
+
+  // Fallback: check for nearby marbles (navGraph based)
   const edges = navGraph.get(selectedMarbleId) || [];
   const nearby = edges.filter(e => e.distanceM < 10);
   if (!nearby.length) {
-    setStatus('No nearby marble (<10 m)');
+    setStatus('No branch available');
     return;
   }
 
@@ -971,7 +1023,6 @@ document.getElementById('branchImageBtn').addEventListener('click', async () => 
   }
   if (!targetTrack || !targetMarble) return;
 
-  // Perform same jump as your branch buttons
   if (targetTrack.id !== currentTrackId) {
     selectTrackWithoutMapReset(targetTrack.id);
     await new Promise(r => setTimeout(r, 100));
@@ -1451,6 +1502,124 @@ function extractImageIndexFromWaypoint(name, description){
 /*              UI MISC            */
 /* =============================== */
 function setStatus(msg){ const el=document.getElementById('status'); if (el) el.textContent=msg; }
+
+/* =============================== */
+/*        MARRIAGE SYSTEM          */
+/* =============================== */
+
+// Get marble identifier string (gpxName:marbleIndex)
+function getMarbleIdentifier(marbleId) {
+  for (const [trackId, track] of allTracks) {
+    const marbleIndex = track.marbles.findIndex(m => m.id === marbleId);
+    if (marbleIndex !== -1) {
+      const gpxName = track.name.endsWith('.gpx') ? track.name : `${track.name}.gpx`;
+      return `${gpxName}:${marbleIndex}`;
+    }
+  }
+  return null;
+}
+
+// Find marble by identifier string
+function findMarbleByIdentifier(identifier) {
+  const [gpxName, indexStr] = identifier.split(':');
+  const index = parseInt(indexStr);
+
+  for (const [trackId, track] of allTracks) {
+    const trackName = track.name.replace(/\.gpx$/i, '');
+    const searchName = gpxName.replace(/\.gpx$/i, '');
+
+    if (trackName === searchName && track.marbles[index]) {
+      return { marble: track.marbles[index], track, trackId };
+    }
+  }
+  return null;
+}
+
+// Get married partners for a marble
+function getMarriedPartners(marbleId) {
+  const identifier = getMarbleIdentifier(marbleId);
+  if (!identifier) return [];
+
+  for (const group of marriageGroups) {
+    if (group.includes(identifier)) {
+      // Return all other marbles in this group
+      return group.filter(id => id !== identifier).map(id => {
+        const result = findMarbleByIdentifier(id);
+        return result ? { ...result, identifier: id } : null;
+      }).filter(Boolean);
+    }
+  }
+  return [];
+}
+
+// Check if marble has married partners
+function hasMarriedPartners(marbleId) {
+  return getMarriedPartners(marbleId).length > 0;
+}
+
+// Load JSON file with marriages
+function loadJsonFile(file) {
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      const data = JSON.parse(e.target.result);
+
+      if (data.marriages && Array.isArray(data.marriages)) {
+        marriageGroups = data.marriages;
+        setStatus(`Loaded ${marriageGroups.length} marriage groups`);
+        console.log("Marriages loaded:", marriageGroups);
+
+        // Preload images for married marbles
+        preloadMarriedMarbleImages();
+      } else {
+        setStatus('No marriages found in JSON');
+      }
+    } catch (err) {
+      console.error('Error parsing JSON:', err);
+      setStatus('Error parsing JSON file');
+    }
+  };
+
+  reader.readAsText(file);
+  document.getElementById('load-json-input').value = '';
+}
+
+// Preload images for all married marbles
+function preloadMarriedMarbleImages() {
+  const imagesToPreload = new Set();
+
+  for (const group of marriageGroups) {
+    for (const identifier of group) {
+      const result = findMarbleByIdentifier(identifier);
+      if (result && result.marble.assignedImage !== null) {
+        // Find the image URL for this marble
+        const trackName = result.track.name.replace(/\.gpx$/i, '');
+        const imageIndex = result.marble.assignedImage;
+        // The image URL pattern is: FRAMES_BASE + trackName + '-' + (imageIndex+1) + '.jpg'
+        const imageUrl = `${FRAMES_BASE}${trackName}-${imageIndex + 1}.jpg`;
+        imagesToPreload.add(imageUrl);
+      }
+    }
+  }
+
+  console.log(`Preloading ${imagesToPreload.size} married marble images`);
+
+  // Preload each image
+  for (const url of imagesToPreload) {
+    if (!preloadedImages[url]) {
+      const img = new Image();
+      img.crossOrigin = 'Anonymous';
+      img.onload = () => {
+        preloadedImages[url] = img;
+        console.log('Preloaded married marble image:', url);
+      };
+      img.onerror = () => console.log('Failed to preload:', url);
+      img.src = url;
+    }
+  }
+}
 
 /* Top controls mirror ring buttons */
 document.getElementById('prevImageBtnTop').addEventListener('click', previousImage);
