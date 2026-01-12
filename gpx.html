@@ -992,6 +992,10 @@ async function loadGPXFromManifest() {
             window.loadedManifestFiles = manifest.files;
         }
 
+        // 🔹 Load yaw fixes from manifest
+        window.yawFixesByFile = manifest.yawfixes || {};
+        console.log('Yaw fixes loaded:', window.yawFixesByFile);
+
         // Load marriages if present
         if (manifest.marriages && Array.isArray(manifest.marriages)) {
             marriageGroups = manifest.marriages;
@@ -1060,15 +1064,21 @@ async function loadSingleGPX(filename) {
         // Ensure filename has correct path
         const fullPath = filename.startsWith(FRAMES_BASE) ? filename : FRAMES_BASE + filename;
         const response = await fetch(fullPath);
-        
+
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}`);
         }
-        
+
         const gpxContent = await response.text();
-        // PASS isPredefined = true for manifest-loaded files
-        parseGPX(gpxContent, filename.split('/').pop(), true);
-        
+
+        // 🔹 Extract yaw fix for this GPX file
+        const baseName = filename.split('/').pop();
+        const yawFixDeg = window.yawFixesByFile?.[baseName] ?? 0;
+        console.log(`Applying yaw fix ${yawFixDeg}° to ${baseName}`);
+
+        // PASS isPredefined = true and yawFixDeg for manifest-loaded files
+        parseGPX(gpxContent, baseName, true, yawFixDeg);
+
     } catch (error) {
         console.error(`Error loading GPX file ${filename}:`, error);
         throw error;
@@ -1091,7 +1101,7 @@ function handleGPXUpload(event) {
 }
 
     // Parse GPX and add as new track
-   function parseGPX(gpxContent, fileName, isPredefined = false) {
+   function parseGPX(gpxContent, fileName, isPredefined = false, yawFixDeg = 0) {
     try {
         const parser = new DOMParser();
         const gpxDoc = parser.parseFromString(gpxContent, 'text/xml');
@@ -1128,6 +1138,7 @@ function handleGPXUpload(event) {
             id: trackId,
             name: fileName.replace('.gpx', ''),
             color: trackColor,
+            yawFixDeg: yawFixDeg, // 🔹 Store the per-track yaw correction
             originalPoints: pointsWithTime,
             activePoints: [],
             density: 100,
@@ -3661,12 +3672,14 @@ function applyImageToSphere(img, imageData) {
     const geometry = new THREE.SphereGeometry(100, 60, 40);
     geometry.scale(-1, 1, 1);
     geometry.rotateY(Math.PI);
-    
-    // REMOVE the automatic Math.PI rotation entirely
-    // if (isGoingForward) {
-    //     geometry.rotateY(Math.PI);
-    // }
-    
+
+    // 🔹 Apply per-track yaw correction from index.json
+    const track = getCurrentTrack();
+    if (track && track.yawFixDeg) {
+        geometry.rotateY(THREE.MathUtils.degToRad(track.yawFixDeg));
+        console.log(`Applied yaw fix: ${track.yawFixDeg}° to ${track.name}`);
+    }
+
     const texture = new THREE.Texture(img);
     texture.needsUpdate = true;
     
@@ -3676,6 +3689,11 @@ function applyImageToSphere(img, imageData) {
     });
     
     sphere = new THREE.Mesh(geometry, material);
+
+    // Apply the current orientation to the sphere (matching gpxviewer.html)
+    sphere.rotation.y = currentYaw;
+    sphere.rotation.x = currentPitch;
+
     panoGroup.add(sphere);
 
         // KEEP current orientation - don't reset!
@@ -3857,7 +3875,8 @@ function updateViewCone() {
     const currentIndex = track.marbles.findIndex(m => m.id === selectedMarbleId);
     
     // 1. GET PATH DIRECTION (base bearing)
-    let pathBearing = 0;
+    let pathBearing = track._lastPathBearing || 0; // keep last good direction as fallback
+
     if (currentIndex < track.marbles.length - 1) {
         const nextMarble = track.marbles[currentIndex + 1];
         const dx = nextMarble.position[0] - marble.position[0];
@@ -3865,10 +3884,19 @@ function updateViewCone() {
         pathBearing = (Math.atan2(dx, dy) * 180 / Math.PI + 360) % 360;
     } else if (currentIndex > 0) {
         const prevMarble = track.marbles[currentIndex - 1];
-        const dx = prevMarble.position[0] - marble.position[0];
-        const dy = prevMarble.position[1] - marble.position[1];
+        const dx = marble.position[0] - prevMarble.position[0]; // invert vector so it still points forward
+        const dy = marble.position[1] - prevMarble.position[1];
         pathBearing = (Math.atan2(dx, dy) * 180 / Math.PI + 360) % 360;
     }
+
+    // smooth continuity near endpoints (avoid 180° flip)
+    if (track._lastPathBearing !== undefined) {
+        const diff = pathBearing - track._lastPathBearing;
+        if (Math.abs(diff) > 180) {
+            pathBearing += diff > 0 ? -360 : 360;
+        }
+    }
+    track._lastPathBearing = pathBearing;
 
     // 2. GET USER OFFSET (convert yaw to degrees and apply to path)
     const userYawDeg = THREE.MathUtils.radToDeg(currentYaw);
@@ -3964,12 +3992,13 @@ function setupViewerEventListeners() {
         if (isDragging && sphere) {
             const deltaX = e.clientX - lastX;
             const deltaY = e.clientY - lastY;
-            
-            panoGroup.rotation.y -= deltaX * 0.01;
-            panoGroup.rotation.x -= deltaY * 0.01;
-            
-            currentYaw = panoGroup.rotation.y;
-            currentPitch = panoGroup.rotation.x;
+
+            // Rotate the sphere, not the group (matching gpxviewer.html)
+            sphere.rotation.y -= deltaX * 0.01;
+            sphere.rotation.x -= deltaY * 0.01;
+
+            currentYaw = sphere.rotation.y;
+            currentPitch = sphere.rotation.x;
             
             lastX = e.clientX;
             lastY = e.clientY;
@@ -4037,16 +4066,16 @@ function setupTouchGestures(canvas) {
             // Single touch panning - look around
             const deltaX = e.touches[0].clientX - lastTouchX;
             const deltaY = e.touches[0].clientY - lastTouchY;
-            
-            // Apply rotation (same as mouse drag)
-            panoGroup.rotation.y -= deltaX * 0.01;
-            panoGroup.rotation.x -= deltaY * 0.01;
-            
+
+            // Rotate the sphere, not the group (matching gpxviewer.html)
+            sphere.rotation.y -= deltaX * 0.01;
+            sphere.rotation.x -= deltaY * 0.01;
+
             // Clamp pitch to avoid flipping
-            panoGroup.rotation.x = Math.max(-Math.PI/2, Math.min(Math.PI/2, panoGroup.rotation.x));
-            
-            currentYaw = panoGroup.rotation.y;
-            currentPitch = panoGroup.rotation.x;
+            sphere.rotation.x = Math.max(-Math.PI/2, Math.min(Math.PI/2, sphere.rotation.x));
+
+            currentYaw = sphere.rotation.y;
+            currentPitch = sphere.rotation.x;
             
             lastTouchX = e.touches[0].clientX;
             lastTouchY = e.touches[0].clientY;
