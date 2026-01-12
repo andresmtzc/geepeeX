@@ -992,6 +992,10 @@ async function loadGPXFromManifest() {
             window.loadedManifestFiles = manifest.files;
         }
 
+        // 🔹 Load yaw fixes from manifest
+        window.yawFixesByFile = manifest.yawfixes || {};
+        console.log('Yaw fixes loaded:', window.yawFixesByFile);
+
         // Load marriages if present
         if (manifest.marriages && Array.isArray(manifest.marriages)) {
             marriageGroups = manifest.marriages;
@@ -1060,15 +1064,21 @@ async function loadSingleGPX(filename) {
         // Ensure filename has correct path
         const fullPath = filename.startsWith(FRAMES_BASE) ? filename : FRAMES_BASE + filename;
         const response = await fetch(fullPath);
-        
+
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}`);
         }
-        
+
         const gpxContent = await response.text();
-        // PASS isPredefined = true for manifest-loaded files
-        parseGPX(gpxContent, filename.split('/').pop(), true);
-        
+
+        // 🔹 Extract yaw fix for this GPX file
+        const baseName = filename.split('/').pop();
+        const yawFixDeg = window.yawFixesByFile?.[baseName] ?? 0;
+        console.log(`Applying yaw fix ${yawFixDeg}° to ${baseName}`);
+
+        // PASS isPredefined = true and yawFixDeg for manifest-loaded files
+        parseGPX(gpxContent, baseName, true, yawFixDeg);
+
     } catch (error) {
         console.error(`Error loading GPX file ${filename}:`, error);
         throw error;
@@ -1091,7 +1101,7 @@ function handleGPXUpload(event) {
 }
 
     // Parse GPX and add as new track
-   function parseGPX(gpxContent, fileName, isPredefined = false) {
+   function parseGPX(gpxContent, fileName, isPredefined = false, yawFixDeg = 0) {
     try {
         const parser = new DOMParser();
         const gpxDoc = parser.parseFromString(gpxContent, 'text/xml');
@@ -1128,6 +1138,7 @@ function handleGPXUpload(event) {
             id: trackId,
             name: fileName.replace('.gpx', ''),
             color: trackColor,
+            yawFixDeg: yawFixDeg, // 🔹 Store the per-track yaw correction
             originalPoints: pointsWithTime,
             activePoints: [],
             density: 100,
@@ -3661,12 +3672,14 @@ function applyImageToSphere(img, imageData) {
     const geometry = new THREE.SphereGeometry(100, 60, 40);
     geometry.scale(-1, 1, 1);
     geometry.rotateY(Math.PI);
-    
-    // REMOVE the automatic Math.PI rotation entirely
-    // if (isGoingForward) {
-    //     geometry.rotateY(Math.PI);
-    // }
-    
+
+    // 🔹 Apply per-track yaw correction from index.json
+    const track = getCurrentTrack();
+    if (track && track.yawFixDeg) {
+        geometry.rotateY(THREE.MathUtils.degToRad(track.yawFixDeg));
+        console.log(`Applied yaw fix: ${track.yawFixDeg}° to ${track.name}`);
+    }
+
     const texture = new THREE.Texture(img);
     texture.needsUpdate = true;
     
