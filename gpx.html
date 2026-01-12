@@ -3992,12 +3992,13 @@ function setupViewerEventListeners() {
         if (isDragging && sphere) {
             const deltaX = e.clientX - lastX;
             const deltaY = e.clientY - lastY;
-            
-            panoGroup.rotation.y -= deltaX * 0.01;
-            panoGroup.rotation.x -= deltaY * 0.01;
-            
-            currentYaw = panoGroup.rotation.y;
-            currentPitch = panoGroup.rotation.x;
+
+            // Rotate the sphere, not the group (matching gpxviewer.html)
+            sphere.rotation.y -= deltaX * 0.01;
+            sphere.rotation.x -= deltaY * 0.01;
+
+            currentYaw = sphere.rotation.y;
+            currentPitch = sphere.rotation.x;
             
             lastX = e.clientX;
             lastY = e.clientY;
@@ -4065,16 +4066,16 @@ function setupTouchGestures(canvas) {
             // Single touch panning - look around
             const deltaX = e.touches[0].clientX - lastTouchX;
             const deltaY = e.touches[0].clientY - lastTouchY;
-            
-            // Apply rotation (same as mouse drag)
-            panoGroup.rotation.y -= deltaX * 0.01;
-            panoGroup.rotation.x -= deltaY * 0.01;
-            
+
+            // Rotate the sphere, not the group (matching gpxviewer.html)
+            sphere.rotation.y -= deltaX * 0.01;
+            sphere.rotation.x -= deltaY * 0.01;
+
             // Clamp pitch to avoid flipping
-            panoGroup.rotation.x = Math.max(-Math.PI/2, Math.min(Math.PI/2, panoGroup.rotation.x));
-            
-            currentYaw = panoGroup.rotation.y;
-            currentPitch = panoGroup.rotation.x;
+            sphere.rotation.x = Math.max(-Math.PI/2, Math.min(Math.PI/2, sphere.rotation.x));
+
+            currentYaw = sphere.rotation.y;
+            currentPitch = sphere.rotation.x;
             
             lastTouchX = e.touches[0].clientX;
             lastTouchY = e.touches[0].clientY;
