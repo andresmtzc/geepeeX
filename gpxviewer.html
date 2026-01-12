@@ -1,0 +1,1460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Viewer-Only: Marbles + NavGraph</title>
+
+<link href="https://api.mapbox.com/mapbox-gl-js/v2.14.1/mapbox-gl.css" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
+<script src="https://api.mapbox.com/mapbox-gl-js/v2.14.1/mapbox-gl.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tmcw/togeojson@4.5.0/dist/togeojson.umd.js"></script>
+
+<style>
+  html, body { margin:0; padding:0; height:100%; background:#0b1020; font-family:system-ui, Arial, sans-serif; }
+  #viewer-container { position:absolute; top:0; left:0; width:100%; height:50%; background:#0b1020; }
+  #map { position:absolute; top:50%; left:0; width:100%; height:50%; }
+
+  #canvas { width:100%; height:100%; touch-action:none; pointer-events:auto; user-select:none; }
+
+  .image-controls {
+    position:absolute; bottom:10px; left:50%; transform:translateX(-50%);
+    display:flex; flex-direction:column; align-items:center; z-index:20; pointer-events:none;
+  }
+  .navigation-ring {
+    position:relative; width:160px; height:160px; border-radius:50%;
+    display:flex; align-items:center; justify-content:center; user-select:none; pointer-events:none;
+  }
+  .nav-button.ring-button {
+    position:absolute; width:40px; height:40px; border:none; border-radius:50%;
+    background:rgba(0,0,0,0); color:#fff; display:flex; align-items:center; justify-content:center;
+    font-size:20px; cursor:pointer; transform:translateX(-50%); pointer-events:auto; z-index:21;
+  }
+  #nextImageBtn.ring-button { top:15px; left:50%; }
+  #prevImageBtn.ring-button { bottom:15px; left:50%; }
+  .nav-button.ring-button:hover { transform:translateX(-50%) scale(1.08); }
+
+  #viewer-loading {
+    display:none; position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+    z-index:100; background:rgba(0,0,0,0.7); padding:16px 20px; border-radius:10px; text-align:center; color:#fff;
+  }
+  .spinner { width:36px; height:36px; border:4px solid rgba(255,255,255,0.12); border-top-color:#22d3ee; border-radius:50%; animation:spin 1s linear infinite; margin:0 auto 8px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Mapbox marker z-index for cone (default fine) */
+  .mapboxgl-marker.view-cone { z-index: 10; }
+
+/* When dragging the panorama, ignore all overlay clicks */
+.dragging-pano .image-controls,
+.dragging-pano .image-controls *,
+.dragging-pano .nav-button,
+.dragging-pano .nav-button *,
+.dragging-pano .ring-button,
+.dragging-pano .ring-button * {
+  pointer-events: none !important;
+}
+
+/* Default branch button position (right side) - points right */
+#branchImageBtn.ring-button {
+  right: 15px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+/* When at endpoint with branch, position branch button at bottom and point down */
+.navigation-ring.has-branch #branchImageBtn.ring-button {
+  bottom: 15px;
+  left: 50%;
+  transform: translateX(-50%) rotate(90deg); /* Rotate to point down */
+  right: auto;
+  top: auto;
+}
+
+/* Reposition other buttons when branch is at bottom */
+.navigation-ring.has-branch #nextImageBtn.ring-button {
+  top: 15px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.navigation-ring.has-branch #prevImageBtn.ring-button {
+  top: 50%;
+  left: 70%;
+  transform: translate(-50%, -50%);
+}
+
+.small-btn {
+display:none;
+}
+
+</style>
+</head>
+<body>
+
+<div id="viewer-container">
+  <canvas id="canvas"></canvas>
+
+  <div class="viewer-controls">
+    <button id="prevImageBtnTop">← Prev</button>
+    <span id="viewer-info">No images loaded</span>
+    <button id="nextImageBtnTop">Next →</button>
+  </div>
+
+  <div class="image-controls">
+    <div class="navigation-ring">
+      <button class="nav-button ring-button" id="nextImageBtn">△</button>
+      <button class="nav-button ring-button" id="prevImageBtn">▽</button>
+      <button class="nav-button ring-button" id="branchImageBtn">▷</button> 
+    </div>
+    <div id="branch-buttons" style="margin-top:8px; display:flex; gap:6px; pointer-events:auto;"></div>
+  </div>
+
+  <div class="time" id="time">-/-</div>
+
+  <div class="loading" id="viewer-loading">
+    <div class="spinner"></div>
+    <div id="loading-text">Loading 360° image...</div>
+  </div>
+</div>
+
+<div id="map"></div>
+<div id="status">Loading…</div>
+
+<script>
+/* =============================== */
+/*            CONSTANTS            */
+/* =============================== */
+mapboxgl.accessToken = 'pk.eyJ1IjoiYW5kcmVzbXR6YyIsImEiOiJjbWN4ZWZvc3MwNjNjMnJwd3h6ZXdyOGJoIn0.ahgRYAxpOnGnnqOjQvJZTA';
+const FRAMES_BASE = 'https://la-la.land/frames/';
+
+/* =============================== */
+/*            GLOBALS              */
+/* =============================== */
+let map;
+let allTracks = new Map();
+let currentTrackId = null;
+
+let scene, camera, renderer, sphere, panoGroup;
+let currentYaw = 0, currentPitch = 0, currentFov = 75;
+let viewerInitialized = false;
+
+let selectedMarbleId = null;
+
+const navGraph = new Map(); // marbleId -> edges[]
+let lastHopBearingDeg = null;
+
+let currentImages = [];
+let currentImageIndex = -1;
+let preloadedImages = {};
+
+let viewConeMarker = null;
+
+/* =============================== */
+/*              INIT               */
+/* =============================== */
+window.addEventListener('DOMContentLoaded', initializeApp);
+
+function initializeApp() {
+  map = new mapboxgl.Map({
+    container: 'map',
+    style: 'mapbox://styles/mapbox/outdoors-v12',
+    center: [0, 0],
+    zoom: 1,
+    cooperativeGestures: false
+  });
+
+  map.on('load', async () => {
+    // MARBLES SOURCE ONLY (no tracks or labels)
+    map.addSource('marbles', { type: 'geojson', data: { type:'FeatureCollection', features: [] } });
+
+    // VISIBLE marbles
+            map.addLayer({
+                id: 'marbles-layer',
+                type: 'circle',
+                source: 'marbles',
+                paint: {
+                    'circle-radius': ['case',
+                        ['==', ['get', 'isDragging'], true], 7,
+                        ['==', ['get', 'isSelected'], true], 6,
+                        ['==', ['get', 'isFixed'], true], 5,
+                        ['==', ['get', 'isLocked'], true], 4.5,
+                        ['==', ['get', 'hasImage'], true], 2, // Larger for marbles with images
+                        4 // Smaller for marbles without images
+                    ],
+                    'circle-color': ['case',
+                        ['==', ['get', 'isDragging'], true], '#FFD700',
+                        ['==', ['get', 'isSelected'], true], '#ff8400',
+                        ['==', ['get', 'isFixed'], true], '#FF0000',
+                        ['==', ['get', 'isLocked'], true], '#FF6B35',
+                        ['==', ['get', 'hasImage'], true], 'rgba(52, 168, 83, 0)', // GREEN for marbles with images
+                        '#8B4513' // Brown for marbles without images
+                    ],
+                    'circle-stroke-width': ['case',
+                        ['==', ['get', 'isSelected'], true], 0,
+                        ['==', ['get', 'hasImage'], true], 1, // Thin stroke for marbles with images
+                        0
+                    ],
+                    'circle-stroke-color': '#FFFFFF'
+                }
+            });
+
+    // INVISIBLE, larger hit area for clicks
+    map.addLayer({
+      id: 'marbles-click-layer',
+      type: 'circle',
+      source: 'marbles',
+      paint: { 'circle-radius': 8, 'circle-opacity': 0, 'circle-stroke-width': 0 }
+    });
+
+    // VIEW CONE source + layers
+    initConeSystem();
+
+    // Raster drone image (optional)
+    try { addCustomImage(map); } catch(e) { console.log('Drone image skipped:', e); }
+
+    addTrackToggleMinimal(); // does nothing visual for tracks; just a placeholder status
+    setupMapInteractions();
+    enableMarbleClickOnly();
+
+    await loadGPXFromManifest();
+  });
+
+  initializeViewer();
+}
+
+/* =============================== */
+/*          DRONE RASTER           */
+/* =============================== */
+function addCustomImage(map) {
+  const imageBounds = [
+    [-100.16483, 25.467111], // TL
+    [-100.154874, 25.467111], // TR
+    [-100.154874, 25.457155], // BR
+    [-100.16483, 25.457155],  // BL
+  ];
+  map.addSource('drone-satellite', {
+    type:'image',
+    url:'https://la-la.land/santte2.jpg',
+    coordinates: imageBounds
+  });
+  map.addLayer({
+    id:'drone-satellite-layer',
+    type:'raster',
+    source:'drone-satellite',
+    paint:{ 'raster-opacity': 1 }
+  }, 'marbles-layer');
+}
+
+/* =============================== */
+/*            MANIFEST             */
+/* =============================== */
+async function loadGPXFromManifest() {
+  try {
+    const MANIFEST_URL = FRAMES_BASE + 'index.json';
+    const res = await fetch(MANIFEST_URL, { cache: 'no-store' });
+    if (!res.ok) { setStatus('No predefined tracks found'); return; }
+
+    const manifest = await res.json();
+
+    // 🔹 NEW: load yawfix mapping safely
+    window.yawFixesByFile = manifest.yawfixes || {};
+    console.log("Yaw fixes loaded:", window.yawFixesByFile);
+
+    // Existing logic for gpx file list
+    let gpxFiles = [];
+    if (manifest.gpxFiles && manifest.gpxFiles.length) gpxFiles = manifest.gpxFiles;
+    else if (manifest.files) gpxFiles = manifest.files.filter(f => f.toLowerCase().endsWith('.gpx'));
+
+    if (!gpxFiles.length) { setStatus('No GPX files in manifest'); return; }
+
+    let loadedCount = 0;
+    for (const gpxFile of gpxFiles) {
+      try { 
+        await loadSingleGPX(gpxFile); 
+        loadedCount++; 
+      } catch(e) { 
+        console.error('Failed GPX:', gpxFile, e); 
+      }
+    }
+
+    if (loadedCount > 0 && allTracks.size > 0) {
+      const firstTrackId = Array.from(allTracks.keys())[0];
+      selectTrack(firstTrackId);
+      const track = allTracks.get(firstTrackId);
+    }
+
+  } catch(e) {
+    console.error(e);
+    setStatus('Error loading manifest');
+  }
+}
+
+
+async function loadSingleGPX(filename) {
+  const fullPath = filename.startsWith(FRAMES_BASE) ? filename : FRAMES_BASE + filename;
+  const response = await fetch(fullPath);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+  const baseName = filename.split('/').pop();
+  const yawFixDeg = window.yawFixesByFile?.[baseName] ?? 0;
+  console.log(`Applying yaw fix ${yawFixDeg}° to ${baseName}`);
+
+  const gpxContent = await response.text();
+  parseGPX(gpxContent, baseName, true, yawFixDeg);
+}
+
+/* =============================== */
+/*           GPX PARSING           */
+/* =============================== */
+function parseGPX(gpxContent, fileName, isPredefined=false, yawFixDeg=0) {
+  const parser = new DOMParser();
+  const gpxDoc = parser.parseFromString(gpxContent, 'text/xml');
+
+  const trkpts = gpxDoc.querySelectorAll('trkpt');
+  const pointsWithTime = [];
+  trkpts.forEach((trkpt, idx) => {
+    const lat = parseFloat(trkpt.getAttribute('lat'));
+    const lon = parseFloat(trkpt.getAttribute('lon'));
+    const t = trkpt.querySelector('time');
+    pointsWithTime.push({
+      id: idx,
+      coordinates: [lon, lat],
+      originalIndex: idx,
+      time: t ? t.textContent : null
+    });
+  });
+  if (!pointsWithTime.length) return;
+
+  const trackId = `track-${allTracks.size + 1}`;
+  const trackColor = '#4285F4';
+
+  const trackData = {
+    id: trackId,
+    name: fileName.replace('.gpx',''),
+    color: trackColor,
+    yawFixDeg: yawFixDeg,       // 🔹 NEW: store the per-track yaw correction
+    originalPoints: pointsWithTime,
+    activePoints: pointsWithTime.map(p => ({...p})),
+    isActive: false,
+    isPredefined,
+    originalStats: calculateOriginalStatsFromPoints(pointsWithTime),
+    marbles: [],
+    marbleSpacing: 10
+  };
+
+  parseWaypointsFromGPX(gpxDoc, trackData);
+
+  allTracks.set(trackId, trackData);
+
+  rebuildNavGraph();
+  updateAllTracksVisualization(false);
+  updateMarbleDisplay();
+  setStatus(`Loaded ${fileName} with ${trackData.marbles.length} waypoints`);
+}
+
+
+function parseWaypointsFromGPX(gpxDoc, trackData) {
+  const waypoints = gpxDoc.querySelectorAll('wpt');
+  const coordinates = getDisplayCoordinates(trackData);
+  const totalDistance = calculateTotalDistance(coordinates);
+
+  waypoints.forEach((wpt, index) => {
+    const lat = parseFloat(wpt.getAttribute('lat'));
+    const lon = parseFloat(wpt.getAttribute('lon'));
+    const nameEl = wpt.querySelector('name');
+    const descEl = wpt.querySelector('desc');
+    const timeEl = wpt.querySelector('time');
+
+    const name = nameEl ? nameEl.textContent : `Waypoint_${index+1}`;
+    const description = descEl ? descEl.textContent : '';
+    const time = timeEl ? timeEl.textContent : null;
+
+    const marble = {
+      id: Date.now() + index + Math.random(),
+      index: trackData.marbles.length,
+      position: [lon, lat],     // exact wpt position
+      distanceAlongRoute: 0,    // set via closest point
+      isLocked: false,
+      isFixed: false,
+      assignedImage: extractImageIndexFromWaypoint(name, description),
+      isWaypoint: true,
+      originalName: name,
+      description,
+      time
+    };
+
+    const closestPoint = findClosestPointOnRoute([lon, lat], coordinates);
+    if (closestPoint) marble.distanceAlongRoute = closestPoint.distance;
+
+    trackData.marbles.push(marble);
+  });
+
+  trackData.marbles.sort((a,b)=>a.distanceAlongRoute - b.distanceAlongRoute);
+  trackData.marbles.forEach((m,i)=>{ m.index = i; });
+}
+
+/* =============================== */
+/*          BASIC HELPERS          */
+/* =============================== */
+function getDisplayCoordinates(track) {
+  return track.activePoints.map(p => p.coordinates);
+}
+
+function calculateDistance(a, b) {
+  const R = 6371000;
+  const dLat = (b[1]-a[1])*Math.PI/180;
+  const dLon = (b[0]-a[0])*Math.PI/180;
+  const lat1 = a[1]*Math.PI/180, lat2 = b[1]*Math.PI/180;
+  const h = Math.sin(dLat/2)**2 + Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLon/2)**2;
+  return 2*R*Math.atan2(Math.sqrt(h), Math.sqrt(1-h));
+}
+
+function calculateTotalDistance(points) {
+  if (points.length < 2) return 0;
+  let sum = 0;
+  for (let i=1;i<points.length;i++) sum += calculateDistance(points[i-1], points[i]);
+  return sum;
+}
+
+function calculateOriginalStatsFromPoints(points){
+  const coords = points.map(p=>p.coordinates);
+  const timeData = points.map(p=>p.time).filter(Boolean);
+  const distance = calculateTotalDistance(coords);
+  const duration = calculateDurationFromTimes(timeData);
+  const avgSpeed = calculateAverageSpeedFromStats(distance, duration);
+  return { distance, duration, avgSpeed, pointCount: points.length };
+}
+
+function calculateDurationFromTimes(timeData){
+  if (timeData.length < 2) return '0s';
+  const start = new Date(timeData[0]), end = new Date(timeData[timeData.length-1]);
+  const ms = end - start;
+  const h = Math.floor(ms/3600000), m = Math.floor((ms%3600000)/60000), s = Math.floor((ms%60000)/1000);
+  if (h>0) return `${h}h ${m}m ${s}s`;
+  if (m>0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+function calculateAverageSpeedFromStats(distanceMeters, durationString){
+  if (durationString==='0s' || !distanceMeters) return 0;
+  const hMatch = durationString.match(/(\d+)h/), mMatch = durationString.match(/(\d+)m/), sMatch = durationString.match(/(\d+)s/);
+  const hours = (hMatch?+hMatch[1]:0) + (mMatch?+mMatch[1]/60:0) + (sMatch?+sMatch[1]/3600:0);
+  const km = distanceMeters/1000;
+  return hours>0 ? km/hours : 0;
+}
+
+function calculateBounds(coordinates){
+  if (!coordinates.length) return null;
+  const b = new mapboxgl.LngLatBounds();
+  coordinates.forEach(c=>b.extend(c));
+  return b;
+}
+
+function bearingDeg(a, b){
+  const toRad=d=>d*Math.PI/180, toDeg=r=>r*180/Math.PI;
+  const φ1 = toRad(a[1]), φ2 = toRad(b[1]);
+  const λ1 = toRad(a[0]), λ2 = toRad(b[0]);
+  const y = Math.sin(λ2-λ1)*Math.cos(φ2);
+  const x = Math.cos(φ1)*Math.cos(φ2)*Math.cos(λ2-λ1) - Math.sin(φ1)*Math.sin(φ2);
+  return (toDeg(Math.atan2(y,x)) + 360) % 360;
+}
+function angularDiffDeg(a,b){ let d=Math.abs(a-b)%360; return d>180?360-d:d; }
+
+/* Closest point along polyline */
+function findClosestPointOnRoute(point, coordinates){
+  let closestPoint=null, minDistance=Infinity, accumulatedDistance=0;
+  for (let i=1;i<coordinates.length;i++){
+    const A=coordinates[i-1], B=coordinates[i];
+    const segLen = calculateDistance(A,B);
+    const cps = findClosestPointOnSegment(point, A, B);
+    const d = calculateDistance(point, cps.point);
+    if (d<minDistance){ minDistance=d; closestPoint={ point: cps.point, distance: accumulatedDistance + cps.distance }; }
+    accumulatedDistance += segLen;
+  }
+  return closestPoint;
+}
+function findClosestPointOnSegment(P, A, B){
+  const Ax=A[0], Ay=A[1], Bx=B[0], By=B[1], Px=P[0], Py=P[1];
+  const ABx=Bx-Ax, ABy=By-Ay, APx=Px-Ax, APy=Py-Ay;
+  const ab2 = ABx*ABx + ABy*ABy;
+  let t = ab2 ? (APx*ABx + APy*ABy)/ab2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  const Qx = Ax + ABx*t, Qy = Ay + ABy*t;
+  return { point:[Qx,Qy], distance: Math.sqrt(ab2)*t };
+}
+
+/* =============================== */
+/*        TRACK SELECTION          */
+/* =============================== */
+function selectTrack(trackId){
+  if (currentTrackId && allTracks.has(currentTrackId)) allTracks.get(currentTrackId).isActive=false;
+  currentTrackId = trackId;
+  const track = allTracks.get(trackId);
+  track.isActive = true;
+
+  updateStatistics();
+  updateAllTracksVisualization(false);
+  updateMarbleDisplay();
+  flyToTrack(track);
+  load360Images();
+
+}
+
+/* =============================== */
+/*     RESET ORIENTATION FOR TRACK */
+/* =============================== */
+function resetViewerOrientationForTrack(track) {
+  if (!track || !panoGroup) return;
+  
+  // Reset to forward-looking orientation
+  currentYaw = 0;
+  currentPitch = 0;
+  
+  // Reset the panorama group rotation FIRST
+  panoGroup.rotation.y = currentYaw;
+  panoGroup.rotation.x = currentPitch;
+  
+  // Clear any previous hop bearing
+  lastHopBearingDeg = null;
+  
+  console.log(`Orientation reset for track: ${track.name}`);
+}
+
+function selectTrackWithoutMapReset(trackId){
+  if (currentTrackId && allTracks.has(currentTrackId)) allTracks.get(currentTrackId).isActive=false;
+  currentTrackId = trackId;
+  const track = allTracks.get(trackId);
+  track.isActive = true;
+
+  // 🔹 RESET ORIENTATION FIRST, before any image loading
+  resetViewerOrientationForTrack(track);
+
+  updateStatistics();
+  updateAllTracksVisualization(false);
+  updateMarbleDisplay();
+
+  if (viewConeMarker){ viewConeMarker.remove(); viewConeMarker = null; }
+  
+  // 🔹 Force immediate UI update before loading images
+  updateNavigationRing(true);
+  updateViewCone();
+  
+  load360Images();
+  setStatus(`Switched to: ${track.name} - ${track.marbles.length} marbles`);
+}
+
+function flyToTrack(track){
+  const coordinates = track.activePoints.map(p=>p.coordinates);
+  const bounds = calculateBounds(coordinates);
+  if (bounds) map.fitBounds(bounds, { padding:50, duration:800, essential:true });
+}
+
+function updateStatistics(){
+  const track = getCurrentTrack();
+  if (!track) return;
+  // minimal: we keep stats internal only; status text sets messages.
+}
+function getCurrentTrack(){ return currentTrackId ? allTracks.get(currentTrackId) : null; }
+
+/* =============================== */
+/*          MAP INTERACTIONS       */
+/* =============================== */
+function setupMapInteractions(){
+  map.on('move', ()=> { if (selectedMarbleId) updateViewCone(); });
+  map.on('zoom', ()=> { if (selectedMarbleId) updateViewCone(); });
+}
+function enableMarbleClickOnly(){
+  map.off('click','marbles-click-layer',handleMarbleClick);
+  map.off('click', handleMapClickForDeselect);
+
+  map.on('click','marbles-click-layer', handleMarbleClick);
+  map.on('click', handleMapClickForDeselect);
+}
+
+/* =============================== */
+/*        MARBLE DISPLAY/CLICK     */
+/* =============================== */
+function updateMarbleDisplay(){
+  const src = map.getSource('marbles');
+  if (!src) return;
+
+  const all = [];
+  allTracks.forEach((track, trackId)=>{
+    track.marbles.forEach((m, index)=>{
+      const hasImage = m.assignedImage !== null;
+      all.push({
+        type:'Feature',
+        geometry:{ type:'Point', coordinates: m.position },
+        properties:{
+          id: m.id,
+          trackId,
+          index,
+          isSelected: (m.id === selectedMarbleId),
+          hasImage
+        }
+      });
+    });
+  });
+
+  src.setData({ type:'FeatureCollection', features: all });
+}
+
+function handleMarbleClick(e){
+  if (!e.features?.length) { deselectMarble(); return; }
+  const marbleId = e.features[0].properties.id;
+  const trackId = e.features[0].properties.trackId;
+
+  if (trackId !== currentTrackId) {
+    selectTrackAndThenMarble(trackId, marbleId);
+  } else {
+    selectMarble(marbleId);
+    showMarbleImage(marbleId);
+  }
+}
+
+function handleMapClickForDeselect(e){
+  const f = map.queryRenderedFeatures(e.point, { layers:['marbles-click-layer'] });
+  if (!f.length) deselectMarble();
+}
+
+let isSwitchingTrack = false;
+
+async function selectTrackAndThenMarble(trackId, marbleId) {
+  if (isSwitchingTrack) return;
+  isSwitchingTrack = true;
+
+  const prevTrackId = currentTrackId;
+  try {
+    selectTrackWithoutMapReset(trackId);
+    
+    // 🔹 Wait for orientation reset and initial UI updates
+    await new Promise(r => setTimeout(r, 100));
+    
+    selectMarble(marbleId);
+
+    const track = getCurrentTrack();
+    const marble = track.marbles.find(m => m.id === marbleId);
+    if (marble && marble.assignedImage !== null) {
+      // 🔹 Small additional delay to ensure orientation is fully reset
+      await new Promise(r => setTimeout(r, 50));
+      showImageByIndex(marble.assignedImage);
+    }
+ 
+    setStatus(`Switched to ${allTracks.get(trackId).name} and selected marble`);
+  } catch (err) {
+    console.error('Switch error', err);
+    if (prevTrackId) selectTrackWithoutMapReset(prevTrackId);
+  } finally {
+    isSwitchingTrack = false;
+  }
+}
+
+function selectMarble(marbleId){
+  const prevSelected = selectedMarbleId;
+  selectedMarbleId = marbleId;
+
+  const track = getCurrentTrack();
+  if (!track) return;
+
+  // bias "continue straight"
+  if (prevSelected){
+    const prev = track.marbles.find(m=>m.id===prevSelected);
+    const curr = track.marbles.find(m=>m.id===marbleId);
+    if (prev && curr) lastHopBearingDeg = bearingDeg(prev.position, curr.position);
+  }
+
+  updateMarbleDisplay();
+  updateViewCone();
+  refreshBranchButtons();
+
+}
+
+function deselectMarble(){
+  selectedMarbleId = null;
+  updateMarbleDisplay();
+  hideViewCone();
+
+}
+
+/* =============================== */
+/*            NAV GRAPH            */
+/* =============================== */
+function rebuildNavGraph(){
+  navGraph.clear();
+  // A) sequential edges within each track
+  allTracks.forEach(track=>{
+    const m = track.marbles;
+    for (let i=0;i<m.length-1;i++){
+      const a=m[i], b=m[i+1];
+      const dAB = calculateDistance(a.position, b.position);
+      const brAB = bearingDeg(a.position, b.position);
+      const brBA = bearingDeg(b.position, a.position);
+      if (!navGraph.has(a.id)) navGraph.set(a.id, []);
+      if (!navGraph.has(b.id)) navGraph.set(b.id, []);
+      navGraph.get(a.id).push({ toMarbleId:b.id, distanceM:dAB, bearingDeg:brAB });
+      navGraph.get(b.id).push({ toMarbleId:a.id, distanceM:dAB, bearingDeg:brBA });
+    }
+    m.forEach(mm=>{ if(!navGraph.has(mm.id)) navGraph.set(mm.id,[]); });
+  });
+
+  // B) junctions across tracks (nearby marbles)
+  const all = [];
+  allTracks.forEach(track => track.marbles.forEach(m => all.push({trackId:track.id, m})));
+  const RADIUS_M = 8;
+  for (let i=0;i<all.length;i++){
+    for (let j=i+1;j<all.length;j++){
+      const A=all[i].m, B=all[j].m;
+      const d = calculateDistance(A.position, B.position);
+      if (d>RADIUS_M) continue;
+      const brAB = bearingDeg(A.position, B.position);
+      const brBA = bearingDeg(B.position, A.position);
+      if (!navGraph.has(A.id)) navGraph.set(A.id, []);
+      if (!navGraph.has(B.id)) navGraph.set(B.id, []);
+      navGraph.get(A.id).push({ toMarbleId:B.id, distanceM:d, bearingDeg:brAB });
+      navGraph.get(B.id).push({ toMarbleId:A.id, distanceM:d, bearingDeg:brBA });
+    }
+  }
+
+  // C) dedupe keep shortest
+  navGraph.forEach((edges, key)=>{
+    const byTarget = new Map();
+    edges.forEach(e=>{
+      const prev = byTarget.get(e.toMarbleId);
+      if (!prev || e.distanceM < prev.distanceM) byTarget.set(e.toMarbleId, e);
+    });
+    navGraph.set(key, Array.from(byTarget.values()));
+  });
+}
+
+function getFacingOptions(marbleId, currentYawRad, maxOptions=3){
+  const edges = navGraph.get(marbleId) || [];
+  const yawDeg = (THREE.MathUtils.radToDeg(currentYawRad) + 360) % 360;
+
+return edges.map(e => {
+  const angleToView = angularDiffDeg(yawDeg, e.bearingDeg);
+  let score = angleToView;
+
+  // Small bias to continue roughly same direction
+  if (lastHopBearingDeg != null) {
+    const continueDiff = angularDiffDeg(lastHopBearingDeg, e.bearingDeg);
+    score += continueDiff * 0.3;
+  }
+
+  // Prefer closer nodes slightly — but not if they're from same GPX and within 8 m
+  const targetTrackId = [...allTracks.entries()]
+    .find(([tid, tr]) => tr.marbles.some(m => m.id === e.toMarbleId))?.[0];
+  const currentTrackId = getCurrentTrack()?.id;
+  const sameTrack = targetTrackId === currentTrackId;
+
+  if (sameTrack && e.distanceM < 8) {
+    score += 20; // de-prioritize same-track near marbles when branching
+  } else {
+    score += e.distanceM * 0.001;
+  }
+
+  return { ...e, angleToView, score };
+})
+  .sort((a,b)=>a.score-b.score)
+  .slice(0, maxOptions);
+}
+
+function refreshBranchButtons(){
+  const host = document.getElementById('branch-buttons');
+  if (!host) return;
+  host.innerHTML = '';
+  if (!selectedMarbleId) return;
+
+  const picks = getFacingOptions(selectedMarbleId, currentYaw);
+  picks.forEach((p, idx)=>{
+    const btn = document.createElement('button');
+    btn.className='small-btn';
+    const meters = Math.round(p.distanceM);
+    btn.textContent = idx===0 ? `Go → (${meters}m)` : `Alt ${idx+1} →`;
+    btn.onclick = async ()=>{
+      const track = getCurrentTrack(); if(!track) return;
+
+      // find target marble across all tracks
+      let target=null, targetTrack=null;
+      for (const [tid, tr] of allTracks){
+        target = tr.marbles.find(m=>m.id===p.toMarbleId);
+        if (target){ targetTrack = tr; break; }
+      }
+      if (!target) return;
+
+      const currentZoom = map.getZoom();
+      if (targetTrack.id !== currentTrackId){
+        selectTrackWithoutMapReset(targetTrack.id);
+        await load360Images();
+        selectMarble(target.id);
+      } else {
+        selectMarble(target.id);
+      }
+
+      const current = track.marbles.find(m=>m.id===selectedMarbleId);
+      if (current) lastHopBearingDeg = bearingDeg(current.position, target.position);
+
+      if (target.assignedImage != null){
+        showMarbleImage(target.id);
+      } else {
+        map.flyTo({ center: target.position, zoom: currentZoom, duration: 1000 });
+        setStatus(`Moved to marble ${target.index+1}${targetTrack.id!==currentTrackId?` in ${targetTrack.name}`:''}`);
+      }
+      updateNavigationRing(true);
+    };
+    host.appendChild(btn);
+  });
+}
+
+/* =============================== */
+/*           VIEWER (Three)        */
+/* =============================== */
+function initializeViewer(){ console.log('Viewer ready'); }
+
+function initThreeJSViewer(){
+  if (viewerInitialized) return;
+  scene = new THREE.Scene();
+  panoGroup = new THREE.Group();
+  scene.add(panoGroup);
+
+  const canvas = document.getElementById('canvas');
+  camera = new THREE.PerspectiveCamera(currentFov, canvas.clientWidth/canvas.clientHeight, 0.1, 1000);
+  camera.position.set(0,0,0.1);
+
+  renderer = new THREE.WebGLRenderer({
+    canvas, antialias:true, alpha:false, powerPreference:'high-performance'
+  });
+  const dpr = Math.min(window.devicePixelRatio || 4, 4);
+  renderer.setPixelRatio(dpr);
+  renderer.setSize(canvas.clientWidth, canvas.clientHeight, false);
+
+  setupViewerEventListeners();
+  animateViewer();
+  viewerInitialized = true;
+}
+
+function animateViewer(){
+  requestAnimationFrame(animateViewer);
+  updateNavigationRing();
+  if (renderer && scene && camera) renderer.render(scene, camera);
+}
+
+
+function shouldShowBranchAtBottom() {
+  if (!selectedMarbleId) return false;
+  
+  const track = getCurrentTrack();
+  if (!track) return false;
+  
+  const marbleIndex = track.marbles.findIndex(m => m.id === selectedMarbleId);
+  const isEndpoint = marbleIndex === 0 || marbleIndex === track.marbles.length - 1;
+  
+  if (!isEndpoint) return false;
+  
+  // Check if there are ANY nearby marbles that represent alternative paths
+  const edges = navGraph.get(selectedMarbleId) || [];
+  
+  // For endpoints, we want to show branch at bottom if there are ANY connections
+  // that aren't just the single sequential connection
+  if (isEndpoint) {
+    // If we're at start (index 0), the normal connection is to index 1
+    // If we're at end (last index), the normal connection is to previous index
+    const normalConnectionIndex = marbleIndex === 0 ? 1 : marbleIndex - 1;
+    const normalConnectionMarble = track.marbles[normalConnectionIndex];
+    
+    // Count connections that aren't the normal sequential one
+    const alternativeConnections = edges.filter(edge => {
+      return edge.toMarbleId !== normalConnectionMarble?.id;
+    });
+    
+    return alternativeConnections.length > 0;
+  }
+  
+  return false;
+}
+
+
+function updateNavigationRing(instant = false) {
+  const ring = document.querySelector('.navigation-ring');
+  const nextBtn = document.getElementById('nextImageBtn');
+  const prevBtn = document.getElementById('prevImageBtn');
+  const branchBtn = document.getElementById('branchImageBtn');
+  if (!ring || !sphere) return;
+
+  const yawDegrees = THREE.MathUtils.radToDeg(currentYaw);
+  ring.style.transform = `rotateZ(${-yawDegrees}deg)`;
+
+  const track = getCurrentTrack();
+  if (!track || !selectedMarbleId) return;
+
+  const marbleIndex = track.marbles.findIndex(m => m.id === selectedMarbleId);
+  const total = track.marbles.length;
+
+  // --- Original forward/back logic preserved ---
+  let canForward = false;
+  let canBackward = false;
+  let canBranch = false;
+
+  // Endpoint logic
+  if (marbleIndex < total - 1) canForward = true;
+  if (marbleIndex > 0) canBackward = true;
+
+  // Directional refinement (same as before)
+  if (marbleIndex > 0 && marbleIndex < total - 1) {
+    const fwd = getBestMarbleInDirection(currentYaw);
+    const back = getBestMarbleInDirection(currentYaw + Math.PI);
+    canForward = !!fwd;
+    canBackward = !!back;
+  }
+
+  const edges = navGraph.get(selectedMarbleId) || [];
+
+  // Junction fix
+  if (edges.length > 2) {
+    canForward = true;
+    canBackward = true;
+  }
+
+  // --- Branch logic ---
+  const isEndpoint = marbleIndex === 0 || marbleIndex === total - 1;
+  const totalConnections = edges.length;
+
+  // Branch button active if:
+  //  - endpoint and at least 2 total connections (fork at end)
+  //  - OR any node with more than 2 connections (true junction)
+  canBranch = (isEndpoint && totalConnections >= 2) || totalConnections > 2;
+
+  // --- Branch positioning logic ---
+  const showBranchAtBottom = shouldShowBranchAtBottom();
+  
+  if (showBranchAtBottom) {
+    ring.classList.add('has-branch');
+  } else {
+    ring.classList.remove('has-branch');
+  }
+
+  // --- Apply visual state ---
+  nextBtn.disabled = !canForward;
+  prevBtn.disabled = !canBackward;
+  branchBtn.disabled = !canBranch;
+
+  nextBtn.style.opacity = canForward ? 1 : 0;
+  prevBtn.style.opacity = canBackward ? 1 : 0;
+  branchBtn.style.opacity = canBranch ? 1 : 0;
+
+  nextBtn.title = canForward ? 'Move forward' : 'No next marble';
+  prevBtn.title = canBackward ? 'Move backward' : 'No previous marble';
+  branchBtn.title = canBranch ? 'Branch to alternative path' : 'No branch available';
+
+  if (instant) {
+    ring.style.transition = 'none';
+    requestAnimationFrame(() => (ring.style.transition = ''));
+  }
+}
+
+
+document.getElementById('branchImageBtn').addEventListener('click', async () => {
+  if (!selectedMarbleId) return;
+  const edges = navGraph.get(selectedMarbleId) || [];
+  const nearby = edges.filter(e => e.distanceM < 10);
+  if (!nearby.length) {
+    setStatus('No nearby marble (<10 m)');
+    return;
+  }
+
+  // Pick nearest neighbor
+  const targetEdge = nearby.sort((a, b) => a.distanceM - b.distanceM)[0];
+  let targetTrack = null, targetMarble = null;
+
+  for (const [tid, tr] of allTracks) {
+    const m = tr.marbles.find(x => x.id === targetEdge.toMarbleId);
+    if (m) { targetTrack = tr; targetMarble = m; break; }
+  }
+  if (!targetTrack || !targetMarble) return;
+
+  // Perform same jump as your branch buttons
+  if (targetTrack.id !== currentTrackId) {
+    selectTrackWithoutMapReset(targetTrack.id);
+    await new Promise(r => setTimeout(r, 100));
+  }
+  selectMarble(targetMarble.id);
+  if (targetMarble.assignedImage != null) showMarbleImage(targetMarble.id);
+  else map.flyTo({ center: targetMarble.position, zoom: map.getZoom(), duration: 800 });
+
+  setStatus(`Jumped to ${targetTrack.name} (${Math.round(targetEdge.distanceM)} m)`);
+});
+
+
+
+function getBestMarbleInDirection(directionRad){
+  if (!selectedMarbleId) return null;
+  const opts = getFacingOptions(selectedMarbleId, directionRad, 1);
+  if (!opts.length) return null;
+  const track = getCurrentTrack();
+  const target = track.marbles.find(m=>m.id===opts[0].toMarbleId);
+  return target ? { index: target.index, distance: opts[0].distanceM } : null;
+}
+
+/* ====== Image Loading/Navigation ====== */
+function showImageInViewer(imageUrl, imageData){
+  showViewerLoading('Loading 360° image...');
+  if (!viewerInitialized) initThreeJSViewer();
+
+  if (preloadedImages[imageUrl]){
+    hideViewerLoading();
+    applyImageToSphere(preloadedImages[imageUrl], imageData);
+    preloadAdjacentImages();
+    return;
+  }
+
+  const img = new Image();
+  img.crossOrigin = 'Anonymous';
+  img.onload = function(){
+    preloadedImages[imageUrl] = img;
+    hideViewerLoading();
+    applyImageToSphere(img, imageData);
+    preloadAdjacentImages();
+  };
+  img.onerror = function(){
+    console.error('Failed to load image:', imageUrl);
+    hideViewerLoading();
+    setStatus('Failed to load 360 image');
+  };
+  img.src = imageUrl + (imageUrl.includes('?')?'&':'?') + 't=' + Date.now();
+}
+
+function applyImageToSphere(img, imageData) {
+  if (sphere) {
+    panoGroup.remove(sphere);
+    sphere.geometry?.dispose();
+    if (sphere.material) {
+      sphere.material.map?.dispose();
+      sphere.material.dispose();
+    }
+  }
+
+  const geometry = new THREE.SphereGeometry(100, 60, 40);
+  geometry.scale(-1, 1, 1);
+  geometry.rotateY(Math.PI);
+
+  // 🔹 Apply per-track yaw correction - but DON'T modify the base geometry rotation
+  // This ensures the correction is applied consistently without affecting currentYaw
+  const track = getCurrentTrack();
+  if (track && track.yawFixDeg) {
+    geometry.rotateY(THREE.MathUtils.degToRad(track.yawFixDeg));
+  }
+
+  const texture = new THREE.Texture(img);
+  texture.needsUpdate = true;
+
+  const material = new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide });
+  sphere = new THREE.Mesh(geometry, material);
+  
+  // 🔹 Apply the current orientation to the sphere, not the group
+  sphere.rotation.y = currentYaw;
+  sphere.rotation.x = currentPitch;
+  
+  panoGroup.add(sphere);
+
+  updateNavigationRing(true);
+}
+
+
+function preloadAdjacentImages(){
+  const prev = currentImageIndex - 1;
+  const next = currentImageIndex + 1;
+  if (prev>=0 && !preloadedImages[currentImages[prev].url]) preloadOne(prev);
+  if (next<currentImages.length && !preloadedImages[currentImages[next].url]) preloadOne(next);
+}
+function preloadOne(index){
+  return new Promise(res=>{
+    const item = currentImages[index]; if (!item) return res();
+    const src = item.url; if (preloadedImages[src]) return res();
+    const img = new Image();
+    img.crossOrigin='Anonymous';
+    img.onload = ()=>{ preloadedImages[src]=img; res(); };
+    img.onerror = ()=> res();
+    img.src = src;
+    if (img.decode) img.decode().catch(()=>{});
+  });
+}
+
+function nextImage(){
+  if (currentImageIndex < currentImages.length-1){
+    currentImageIndex++;
+    showImageByIndex(currentImageIndex);
+    updateNavigationRing(true);
+  }
+  updateViewerUI(); refreshBranchButtons();
+}
+function previousImage(){
+  if (currentImageIndex > 0){
+    currentImageIndex--;
+    showImageByIndex(currentImageIndex);
+    updateNavigationRing(true);
+  }
+  updateViewerUI(); refreshBranchButtons();
+}
+function showImageByIndex(index){
+  if (index<0 || index>=currentImages.length) return;
+  const image = currentImages[index];
+  if (preloadedImages[image.url]){
+    applyImageToSphere(preloadedImages[image.url], image);
+    currentImageIndex = index;
+    updateViewerUI();
+    highlightMarbleWithImage(index);
+  } else {
+    showImageInViewer(image.url, image);
+    currentImageIndex = index;
+    updateViewerUI();
+    highlightMarbleWithImage(index);
+  }
+  preloadAdjacentImages();
+}
+function updateViewerUI(){
+  document.getElementById('time').textContent = `${currentImageIndex+1}/${currentImages.length}`;
+  document.getElementById('viewer-info').textContent = `Image ${currentImageIndex+1}/${currentImages.length}`;
+}
+document.getElementById('nextImageBtn').addEventListener('click', nextImage);
+document.getElementById('prevImageBtn').addEventListener('click', previousImage);
+document.getElementById('nextImageBtnTop').addEventListener('click', nextImage);
+document.getElementById('prevImageBtnTop').addEventListener('click', previousImage);
+
+/* ====== Click marble -> image ====== */
+function highlightMarbleWithImage(imageIndex){
+  const track = getCurrentTrack(); if (!track) return;
+  const marble = track.marbles.find(m=>m.assignedImage===imageIndex);
+  if (marble) selectMarble(marble.id);
+}
+function showMarbleImage(marbleId){
+  const track = getCurrentTrack(); if(!track) return;
+  const m = track.marbles.find(x=>x.id===marbleId); if (!m) return;
+  if (m.assignedImage == null){ setStatus(`Marble ${m.index+1} has no image`); return; }
+  showImageByIndex(m.assignedImage);
+ 
+  refreshBranchButtons();
+}
+
+/* ====== Viewer events (pan + wheel zoom) ====== */
+function setupViewerEventListeners(){
+  const canvas = document.getElementById('canvas');
+  let isDragging=false, lastX=0, lastY=0;
+  let touchStartX = 0, touchStartY = 0;  // Variables for touch events
+  let initialDistance = 0;  // Variable to track the initial distance between two fingers
+
+  // Mouse drag events
+  canvas.addEventListener('mousedown', e=>{
+    isDragging=true; lastX=e.clientX; lastY=e.clientY; canvas.style.cursor='grabbing';
+    document.body.classList.add('dragging-pano');
+  });
+  
+  canvas.addEventListener('mousemove', e=>{
+    if (!isDragging || !sphere) return;
+    const dx=e.clientX-lastX, dy=e.clientY-lastY;
+    
+    // Rotate the sphere, not the group
+    sphere.rotation.y -= dx*0.01;
+    sphere.rotation.x -= dy*0.01;
+    
+    currentYaw = sphere.rotation.y; 
+    currentPitch = sphere.rotation.x;
+    
+    lastX=e.clientX; lastY=e.clientY;
+    updateNavigationRing(); updateViewCone(); refreshBranchButtons();
+  });
+
+  canvas.addEventListener('mouseup', ()=>{
+    isDragging=false; setTimeout(()=>{ canvas.style.cursor='grab'; }, 50);
+    document.body.classList.remove('dragging-pano');
+  });
+
+  canvas.addEventListener('mouseenter', ()=>{ canvas.style.cursor='grab'; });
+  canvas.addEventListener('mouseleave', ()=>{ isDragging=false; canvas.style.cursor='default'; });
+
+  canvas.addEventListener('wheel', handleWheelZoom, { passive:false });
+
+  // Add touch events for mobile support
+canvas.addEventListener('touchstart', (e) => {
+  if (e.touches.length == 1) {  // Single touch to drag
+    touchStartX = e.touches[0].clientX;
+    touchStartY = e.touches[0].clientY;
+  }
+
+  if (e.touches.length == 2) {  // Pinch-to-zoom with two fingers
+    const dx = e.touches[0].clientX - e.touches[1].clientX;
+    const dy = e.touches[0].clientY - e.touches[1].clientY;
+    initialDistance = Math.sqrt(dx * dx + dy * dy);  // Initial pinch distance
+  }
+});
+
+canvas.addEventListener('touchmove', (e) => {
+  if (e.touches.length == 1) {  // Single touch to move (dragging)
+    const dx = e.touches[0].clientX - touchStartX;
+    const dy = e.touches[0].clientY - touchStartY;
+
+    // Rotate the sphere based on touch movement
+    sphere.rotation.y -= dx * 0.01;
+    sphere.rotation.x -= dy * 0.01;
+
+    currentYaw = sphere.rotation.y;
+    currentPitch = sphere.rotation.x;
+
+    touchStartX = e.touches[0].clientX;  // Update the touch positions
+    touchStartY = e.touches[0].clientY;
+
+    updateNavigationRing();
+    updateViewCone();
+    refreshBranchButtons();
+  }
+
+  if (e.touches.length == 2) {  // Pinch-to-zoom with two fingers
+    const dx = e.touches[0].clientX - e.touches[1].clientX;
+    const dy = e.touches[0].clientY - e.touches[1].clientY;
+    const currentDistance = Math.sqrt(dx * dx + dy * dy);  // Current pinch distance
+
+    if (initialDistance > 0) {
+      const zoomChange = initialDistance - currentDistance; // INVERTED: pinch in = zoom out, pinch out = zoom in
+
+      // Adjust FOV (zoom in or zoom out based on pinch distance)
+      const zoomSpeed = 2;  // Adjust the zoom sensitivity
+      currentFov = Math.max(30, Math.min(120, currentFov + zoomChange * zoomSpeed * 0.1));  // Ensure FOV is within bounds
+
+      camera.fov = currentFov;  // Update camera FOV
+      camera.updateProjectionMatrix();  // Apply the FOV change
+      initialDistance = currentDistance;  // Update initial distance
+      updateViewCone();  // Update the view cone to reflect new zoom
+    }
+  }
+});
+
+canvas.addEventListener('touchend', () => {
+  // Reset touch data after the touch ends
+  touchStartX = 0;
+  touchStartY = 0;
+  initialDistance = 0;  // Reset pinch distance
+});
+}
+
+
+function handleWheelZoom(e){
+  e.preventDefault(); e.stopPropagation();
+  const zoomSpeed = e.deltaMode===0 ? 2 : 60;
+  const delta = e.deltaY>0 ? zoomSpeed : -zoomSpeed;
+  const old = currentFov;
+  currentFov = Math.max(30, Math.min(120, currentFov + delta));
+  if (currentFov !== old){
+    camera.fov = currentFov; camera.updateProjectionMatrix();
+    updateViewCone(); renderer.render(scene, camera);
+  }
+}
+
+/* ====== Loading overlay ====== */
+function showViewerLoading(msg){
+  const l=document.getElementById('viewer-loading'), t=document.getElementById('loading-text');
+  if (l && t){ t.textContent=msg; l.style.display='block'; }
+}
+function hideViewerLoading(){ const l=document.getElementById('viewer-loading'); if (l) l.style.display='none'; }
+
+/* =============================== */
+/*          IMAGE SOURCING         */
+/* =============================== */
+async function load360Images(){
+  try{
+
+    await createImagesFromFramesFolder();
+    if (currentImages.length>0){
+      if (!isSwitchingTrack){
+        const track=getCurrentTrack();
+        if (selectedMarbleId){
+          const m=track.marbles.find(x=>x.id===selectedMarbleId);
+          if (m && m.assignedImage!=null) showImageByIndex(m.assignedImage); else showImageByIndex(0);
+        } else { showImageByIndex(0); }
+      }
+      startBackgroundPreload(3);
+    }
+  } catch(e){ 
+    console.error(e);
+    setStatus('Error loading 360 images');
+  }
+}
+  
+async function createImagesFromFramesFolder(){
+  currentImages=[]; currentImageIndex=-1;
+  const track = getCurrentTrack(); if (!track){ setStatus('No track selected'); return; }
+  const gpxName = (track.name||'').replace(/\.[^.]+$/,'');
+  if (!gpxName){ setStatus('GPX name missing'); return; }
+
+  const requiredStartLC = (gpxName+'-').toLowerCase();
+
+  let list;
+  try{
+    const res=await fetch(FRAMES_BASE+'index.json', { cache:'no-store' });
+    if (!res.ok){ setStatus('Could not fetch frames index'); return; }
+    const data = await res.json();
+    list = Array.isArray(data) ? data : Array.isArray(data.files) ? data.files : [];
+  }catch(e){ setStatus('Error reading frames manifest'); return; }
+
+  const files = list.map(x=>String(x).split('/').pop()).filter(Boolean);
+  const matches = files
+    .filter(n=>n.toLowerCase().startsWith(requiredStartLC))
+    .filter(n=>/\.(?:jpe?g|png)$/i.test(n))
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+
+  if (!matches.length){ setStatus(`No frames for "${gpxName}"`); return; }
+
+  currentImages = matches.map((filename,i)=>({ url: FRAMES_BASE+filename, index:i, filename, timestamp:filename, sequence:i }));
+
+}
+
+/* background preload */
+function startBackgroundPreload(concurrency=3){
+  if (currentImages.length<=1) return;
+  const order = buildPreloadOrder(currentImageIndex, currentImages.length);
+  runPreloadPool(order, concurrency);
+}
+function buildPreloadOrder(center,total){
+  const seq=[]; for(let step=1; step<total; step++){ const f=center+step, b=center-step; if(f<total) seq.push(f); if(b>=0) seq.push(b); }
+  return seq;
+}
+function runPreloadPool(indexes, concurrency){
+  let i=0;
+  const workers = Array.from({length:Math.min(concurrency, indexes.length)}, async ()=>{
+    while(i<indexes.length){ const idx=indexes[i++]; await preloadOne(idx).catch(()=>{}); }
+  });
+  Promise.all(workers).then(()=>console.log('Background preload complete'));
+}
+
+/* =============================== */
+/*            VIEW CONE            */
+/* =============================== */
+function initConeSystem(){
+  if (!map.getSource('view-cone')){
+    map.addSource('view-cone', {
+      type:'geojson',
+      data:{ type:'Feature', geometry:{ type:'Polygon', coordinates:[[[0,0],[0,0],[0,0]]] } }
+    });
+    map.addLayer({ id:'view-cone-fill', type:'fill', source:'view-cone', paint:{ 'fill-color':'#ff8400', 'fill-opacity':0.5 } });
+    map.addLayer({ id:'view-cone-outline', type:'line', source:'view-cone', paint:{ 'line-color':'#ff6b6b', 'line-width':2, 'line-opacity':0 } });
+  }
+}
+function hideViewCone(){
+  if (map && map.getSource('view-cone')){
+    map.getSource('view-cone').setData({ type:'Feature', geometry:{ type:'Polygon', coordinates:[[[0,0],[0,0],[0,0]]] } });
+  }
+}
+function getHorizontalFovDeg(){
+  const c=document.getElementById('canvas');
+  const aspect = (camera && camera.aspect) || (c && c.clientHeight ? c.clientWidth/c.clientHeight : 16/9);
+  const vRad = THREE.MathUtils.degToRad(currentFov);
+  const hRad = 2 * Math.atan(Math.tan(vRad/2)*aspect);
+  return THREE.MathUtils.radToDeg(hRad);
+}
+// Update the map polygon to match current yaw + FOV
+function updateViewCone() {
+    if (!map || !map.getSource('view-cone')) return;
+    
+    const track = getCurrentTrack();
+    if (!track || !selectedMarbleId) return;
+    
+    const marble = track.marbles.find(m => m.id === selectedMarbleId);
+    if (!marble) return;
+
+    const currentIndex = track.marbles.findIndex(m => m.id === selectedMarbleId);
+    
+    // 1. GET PATH DIRECTION (base bearing)
+    let pathBearing = track._lastPathBearing || 0; // keep last good direction as fallback
+
+    if (currentIndex < track.marbles.length - 1) {
+        const nextMarble = track.marbles[currentIndex + 1];
+        const dx = nextMarble.position[0] - marble.position[0];
+        const dy = nextMarble.position[1] - marble.position[1];
+        pathBearing = (Math.atan2(dx, dy) * 180 / Math.PI + 360) % 360;
+    } else if (currentIndex > 0) {
+        const prevMarble = track.marbles[currentIndex - 1];
+        const dx = marble.position[0] - prevMarble.position[0]; // 🔹 invert vector so it still points forward
+        const dy = marble.position[1] - prevMarble.position[1];
+        pathBearing = (Math.atan2(dx, dy) * 180 / Math.PI + 360) % 360;
+    }
+
+    // smooth continuity near endpoints (avoid 180° flip)
+    if (track._lastPathBearing !== undefined) {
+        const diff = pathBearing - track._lastPathBearing;
+        if (Math.abs(diff) > 180) {
+            // wrap around direction instead of flipping
+            pathBearing += diff > 0 ? -360 : 360;
+        }
+    }
+    track._lastPathBearing = pathBearing;
+
+    // 2. GET USER OFFSET (convert yaw to degrees and apply to path)
+    const userYawDeg = THREE.MathUtils.radToDeg(currentYaw);
+    const finalHeading = (pathBearing + userYawDeg + 360) % 360;
+
+    // console.log('Path bearing:', pathBearing.toFixed(2), 'User yaw:', userYawDeg.toFixed(2), 'Final heading:', finalHeading.toFixed(2));
+
+    const fovH = getHorizontalFovDeg();
+    const radiusMeters = 15;
+    
+    const ring = makeViewConeRing(
+        marble.position[1],
+        marble.position[0],
+        finalHeading,
+        fovH,
+        radiusMeters,
+        24
+    );
+
+    map.getSource('view-cone').setData({
+        type: 'Feature',
+        geometry: { type: 'Polygon', coordinates: [ring] }
+    });
+}
+
+
+function destFromBearingDistance(lat, lon, bearingDegVal, distMeters){
+  const R=6378137, brng=degToRad(bearingDegVal);
+  const φ1=degToRad(lat), λ1=degToRad(lon);
+  const φ2=Math.asin(Math.sin(φ1)*Math.cos(distMeters/R)+Math.cos(φ1)*Math.sin(distMeters/R)*Math.cos(brng));
+  const λ2=λ1+Math.atan2(Math.sin(brng)*Math.sin(distMeters/R)*Math.cos(φ1), Math.cos(distMeters/R)-Math.sin(φ1)*Math.sin(φ2));
+  return [radToDeg(λ2), radToDeg(φ2)];
+}
+function makeViewConeRing(lat, lon, headingDeg, fovDeg, radiusMeters=7, steps=24){
+  const half = Math.max(0, Math.min(89, fovDeg/2));
+  const start = headingDeg - half, end = headingDeg + half;
+  const ring = [[lon,lat]];
+  for (let s=0;s<=steps;s++){
+    const t=s/steps, brg=start + (end-start)*t;
+    ring.push(destFromBearingDistance(lat, lon, brg, radiusMeters));
+  }
+  ring.push([lon,lat]); return ring;
+}
+function radToDeg(r){ return r*180/Math.PI; }
+function degToRad(d){ return d*Math.PI/180; }
+
+/* =============================== */
+/*      MINIMAL TRACKS VIS UPG     */
+/* =============================== */
+function updateAllTracksVisualization(){ /* no track lines by design */ }
+function addTrackToggleMinimal(){ setStatus('Viewer ready'); }
+
+/* =============================== */
+/*          IMAGE INDEXING         */
+/* =============================== */
+function extractImageIndexFromWaypoint(name, description){
+  const text = (name + ' ' + description).toLowerCase();
+  const m1 = text.match(/image[^\d]*(\d+)/); if (m1) return parseInt(m1[1])-1;
+  const m2 = text.match(/photo[^\d]*(\d+)/); if (m2) return parseInt(m2[1])-1;
+  const m3 = name?.match(/(\d+)$/); if (m3) return parseInt(m3[1])-1;
+  return null;
+}
+
+/* =============================== */
+/*              UI MISC            */
+/* =============================== */
+function setStatus(msg){ const el=document.getElementById('status'); if (el) el.textContent=msg; }
+
+/* Top controls mirror ring buttons */
+document.getElementById('prevImageBtnTop').addEventListener('click', previousImage);
+document.getElementById('nextImageBtnTop').addEventListener('click', nextImage);
+</script>
+</body>
+</html> 
