@@ -341,34 +341,42 @@
     left: 50%;
 }
 
-/* Default branch button position (right side) - points right */
-#branchImageBtn.ring-button {
+/* Branch button positions based on position class */
+/* 3 o'clock - right side (default) */
+#branchImageBtn.ring-button,
+.navigation-ring.branch-right #branchImageBtn.ring-button {
     right: 15px;
     top: 50%;
     left: auto;
+    bottom: auto;
     transform: translateY(-50%);
 }
 
-/* When at endpoint with branch, position branch button at bottom and point down */
-.navigation-ring.has-branch #branchImageBtn.ring-button {
-    bottom: 15px;
-    left: 50%;
-    transform: translateX(-50%) rotate(90deg);
+/* 9 o'clock - left side */
+.navigation-ring.branch-left #branchImageBtn.ring-button {
+    left: 15px;
+    top: 50%;
     right: auto;
-    top: auto;
+    bottom: auto;
+    transform: translateY(-50%) rotate(180deg);
 }
 
-/* Reposition other buttons when branch is at bottom */
-.navigation-ring.has-branch #nextImageBtn.ring-button {
+/* 12 o'clock - top (when at last marble, no next button) */
+.navigation-ring.branch-top #branchImageBtn.ring-button {
     top: 15px;
     left: 50%;
-    transform: translateX(-50%);
+    right: auto;
+    bottom: auto;
+    transform: translateX(-50%) rotate(-90deg);
 }
 
-.navigation-ring.has-branch #prevImageBtn.ring-button {
-    top: 50%;
-    left: 70%;
-    transform: translate(-50%, -50%);
+/* 6 o'clock - bottom (when at first marble, no prev button) */
+.navigation-ring.branch-bottom #branchImageBtn.ring-button {
+    bottom: 15px;
+    left: 50%;
+    right: auto;
+    top: auto;
+    transform: translateX(-50%) rotate(90deg);
 }
 
 .nav-button.ring-button:hover {
@@ -377,10 +385,6 @@
 
 #branchImageBtn.ring-button:hover {
     transform: translateY(-50%) scale(1.2);
-}
-
-.navigation-ring.has-branch #branchImageBtn.ring-button:hover {
-    transform: translateX(-50%) rotate(90deg) scale(1.2);
 }
 
 .time {
@@ -3522,36 +3526,54 @@ function updateNavigationRing(instant = false) {
     const marbleIndex = track.marbles.findIndex(m => m.id === selectedMarbleId);
     const total = track.marbles.length;
 
-    // Simple index-based navigation
-    const canForward = marbleIndex < total - 1;
-    const canBackward = marbleIndex > 0;
+    // Detect position in track
+    const isFirst = marbleIndex === 0;
+    const isLast = marbleIndex === total - 1;
+    const canForward = !isLast;
+    const canBackward = !isFirst;
 
     // Branch only available if marble has married partners
     const canBranch = hasMarriedPartners(selectedMarbleId);
 
-    // Branch positioning logic
+    // Clear all branch position classes
+    ring.classList.remove('branch-left', 'branch-right', 'branch-top', 'branch-bottom');
+
+    // Determine branch button position
     if (canBranch) {
-        ring.classList.add('has-branch');
-    } else {
-        ring.classList.remove('has-branch');
+        if (isFirst && !canBackward) {
+            // At first marble, no previous button - branch takes 6 o'clock
+            ring.classList.add('branch-bottom');
+        } else if (isLast && !canForward) {
+            // At last marble, no next button - branch takes 12 o'clock
+            ring.classList.add('branch-top');
+        } else {
+            // Middle marble - calculate if branch should be left or right
+            const branchPosition = calculateBranchPosition();
+            if (branchPosition === 'left') {
+                ring.classList.add('branch-left');
+            } else {
+                // Default to right (3 o'clock)
+                ring.classList.add('branch-right');
+            }
+        }
     }
 
-    // Apply visual state
+    // Show/hide buttons based on availability
     if (nextBtn) {
-        nextBtn.disabled = !canForward;
         nextBtn.style.opacity = canForward ? 1 : 0;
+        nextBtn.style.pointerEvents = canForward ? 'auto' : 'none';
         nextBtn.title = canForward ? 'Move forward' : 'No next marble';
     }
 
     if (prevBtn) {
-        prevBtn.disabled = !canBackward;
         prevBtn.style.opacity = canBackward ? 1 : 0;
+        prevBtn.style.pointerEvents = canBackward ? 'auto' : 'none';
         prevBtn.title = canBackward ? 'Move backward' : 'No previous marble';
     }
 
     if (branchBtn) {
-        branchBtn.disabled = !canBranch;
         branchBtn.style.opacity = canBranch ? 1 : 0;
+        branchBtn.style.pointerEvents = canBranch ? 'auto' : 'none';
         branchBtn.title = canBranch ? 'Jump to married partner' : 'No branch available';
     }
 
@@ -3561,6 +3583,56 @@ function updateNavigationRing(instant = false) {
             ring.style.transition = '';
         });
     }
+}
+
+// Calculate if branch button should be on left or right based on married marble position
+function calculateBranchPosition() {
+    if (!selectedMarbleId) return 'right';
+
+    const marriedPartners = getMarriedPartners(selectedMarbleId);
+    if (marriedPartners.length === 0) return 'right';
+
+    const track = getCurrentTrack();
+    if (!track) return 'right';
+
+    const currentMarble = track.marbles.find(m => m.id === selectedMarbleId);
+    if (!currentMarble) return 'right';
+
+    // Get first married partner's position
+    const partner = marriedPartners[0];
+    const partnerMarble = partner.marble;
+
+    // Calculate bearing from current marble to partner marble
+    const dx = partnerMarble.position[0] - currentMarble.position[0];
+    const dy = partnerMarble.position[1] - currentMarble.position[1];
+    const bearingToPartner = (Math.atan2(dx, dy) * 180 / Math.PI + 360) % 360;
+
+    // Get path bearing (direction cone is facing)
+    const marbleIndex = track.marbles.findIndex(m => m.id === selectedMarbleId);
+    let pathBearing = 0;
+
+    if (marbleIndex < track.marbles.length - 1) {
+        const nextMarble = track.marbles[marbleIndex + 1];
+        const dx2 = nextMarble.position[0] - currentMarble.position[0];
+        const dy2 = nextMarble.position[1] - currentMarble.position[1];
+        pathBearing = (Math.atan2(dx2, dy2) * 180 / Math.PI + 360) % 360;
+    } else if (marbleIndex > 0) {
+        const prevMarble = track.marbles[marbleIndex - 1];
+        const dx2 = currentMarble.position[0] - prevMarble.position[0];
+        const dy2 = currentMarble.position[1] - prevMarble.position[1];
+        pathBearing = (Math.atan2(dx2, dy2) * 180 / Math.PI + 360) % 360;
+    }
+
+    // Calculate relative angle: positive = partner is to the right, negative = to the left
+    let relativeAngle = bearingToPartner - pathBearing;
+
+    // Normalize to -180 to 180
+    while (relativeAngle > 180) relativeAngle -= 360;
+    while (relativeAngle < -180) relativeAngle += 360;
+
+    // If partner is to the left (negative angle), place button on left (9 o'clock)
+    // If partner is to the right (positive angle), place button on right (3 o'clock)
+    return relativeAngle < 0 ? 'left' : 'right';
 }
 
 // ===== IMAGE DISPLAY =====
