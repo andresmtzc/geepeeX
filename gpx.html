@@ -679,8 +679,6 @@ let viewConeMarker = null;
 let isGoingForward = true;
 
 
-// ---- NAV GRAPH (for Y-junction choices) ----
-const navGraph = new Map(); // marbleId -> Array<{toMarbleId, distanceM, bearingDeg}>
 let lastHopBearingDeg = null; // optional bias to "keep going straight"
 
     // Marble system variables - now track-specific
@@ -1150,8 +1148,7 @@ function handleGPXUpload(event) {
         allTracks.set(trackId, trackData);
         
         // Rebuild navigation graph for waypoints
-        rebuildNavGraph();
-        
+                
         // If first track, select it
         if (allTracks.size === 1) {
             selectTrack(trackId);
@@ -1217,44 +1214,6 @@ function parseWaypointsFromGPX(gpxDoc, trackData) {
     });
     
     console.log(`Created ${trackData.marbles.length} marbles from waypoints - USING EXACT POSITIONS`);
-    
-    ensureSequentialConnections(trackData);
-}
-
-function ensureSequentialConnections(track) {
-    if (!track || track.marbles.length < 2) return;
-    
-    const marbles = track.marbles;
-    
-    // Ensure consecutive marbles are connected
-    for (let i = 0; i < marbles.length - 1; i++) {
-        const current = marbles[i];
-        const next = marbles[i + 1];
-        
-        const distance = calculateDistance(current.position, next.position);
-        const bearing = bearingDeg(current.position, next.position);
-        const reverseBearing = bearingDeg(next.position, current.position);
-        
-        // Add forward connection
-        if (!navGraph.has(current.id)) navGraph.set(current.id, []);
-        if (!navGraph.get(current.id).some(conn => conn.toMarbleId === next.id)) {
-            navGraph.get(current.id).push({
-                toMarbleId: next.id,
-                distanceM: distance,
-                bearingDeg: bearing
-            });
-        }
-        
-        // Add reverse connection
-        if (!navGraph.has(next.id)) navGraph.set(next.id, []);
-        if (!navGraph.get(next.id).some(conn => conn.toMarbleId === current.id)) {
-            navGraph.get(next.id).push({
-                toMarbleId: current.id,
-                distanceM: distance,
-                bearingDeg: reverseBearing
-            });
-        }
-    }
 }
 
 function extractImageIndexFromWaypoint(name, description) {
@@ -1916,8 +1875,7 @@ function reattachMarblesToTrack(track) {
     });
     
     updateMarbleDisplay();
-    rebuildNavGraph();
-    setStatus(`Reattached ${track.marbles.length} marbles to updated track`);
+        setStatus(`Reattached ${track.marbles.length} marbles to updated track`);
 }
 
     // Enable editing functionality
@@ -2352,8 +2310,7 @@ function handlePointDrag(e) {
     }
     
     updateMarbleDisplay();
-    rebuildNavGraph();
-    
+        
     setStatus(`Created ${marbleCount} marbles with 1:1 image assignment`);
 }
 
@@ -2411,8 +2368,7 @@ function addMarble() {
     updateMarbleDisplay();
     
     setStatus(`Added marble #${marbles.length} with image ${marbles.length}/${currentImages.length}`);
-    rebuildNavGraph();
-}
+    }
 
 function repairImageAssignment() {
     const track = getCurrentTrack();
@@ -2509,8 +2465,7 @@ function removeMarble() {
     }
     
     updateMarbleDisplay();
-    rebuildNavGraph();
-}
+    }
 
 
 function respaceAllMarbles() {
@@ -2547,93 +2502,7 @@ function respaceAllMarbles() {
         marbles[i].assignedImage = assignmentMap.get(marbles[i].id);
     }
     
-    rebuildNavGraph();
-}
-
-function rebuildNavGraph() {
-  navGraph.clear();
-
-  // (A) Edges along each track (sequential marbles)
-  allTracks.forEach(track => {
-    const m = track.marbles;
-    for (let i = 0; i < m.length - 1; i++) {
-      const a = m[i], b = m[i+1];
-      const dAB = calculateDistance(a.position, b.position);
-      const brAB = bearingDeg(a.position, b.position);
-      const brBA = bearingDeg(b.position, a.position);
-
-      if (!navGraph.has(a.id)) navGraph.set(a.id, []);
-      if (!navGraph.has(b.id)) navGraph.set(b.id, []);
-      navGraph.get(a.id).push({ toMarbleId: b.id, distanceM: dAB, bearingDeg: brAB });
-      navGraph.get(b.id).push({ toMarbleId: a.id, distanceM: dAB, bearingDeg: brBA });
     }
-    // ensure nodes exist even if isolated
-    m.forEach(mm => { if (!navGraph.has(mm.id)) navGraph.set(mm.id, []); });
-  });
-
-  // (B) Cross-edges at junctions (nearby marbles)
-  const allMarbles = [];
-  allTracks.forEach(track => track.marbles.forEach(m => allMarbles.push({ trackId: track.id, m })));
-
-  const RADIUS_M = 8; // tweak: what "counts" as a junction
-  for (let i = 0; i < allMarbles.length; i++) {
-    for (let j = i + 1; j < allMarbles.length; j++) {
-      const A = allMarbles[i].m, B = allMarbles[j].m;
-      const d = calculateDistance(A.position, B.position);
-      if (d > RADIUS_M) continue;
-
-      const brAB = bearingDeg(A.position, B.position);
-      const brBA = bearingDeg(B.position, A.position);
-      if (!navGraph.has(A.id)) navGraph.set(A.id, []);
-      if (!navGraph.has(B.id)) navGraph.set(B.id, []);
-
-      navGraph.get(A.id).push({ toMarbleId: B.id, distanceM: d, bearingDeg: brAB });
-      navGraph.get(B.id).push({ toMarbleId: A.id, distanceM: d, bearingDeg: brBA });
-    }
-  }
-
-  // (C) De-duplicate edges per node by toMarbleId (keep shortest)
-  navGraph.forEach((edges, key) => {
-    const byTarget = new Map();
-    edges.forEach(e => {
-      const prev = byTarget.get(e.toMarbleId);
-      if (!prev || e.distanceM < prev.distanceM) byTarget.set(e.toMarbleId, e);
-    });
-    navGraph.set(key, Array.from(byTarget.values()));
-  });
-}
-
-function getFacingOptions(marbleId, currentYawRad, maxOptions = 3) {
-    const edges = navGraph.get(marbleId) || [];
-    const yawDeg = (THREE.MathUtils.radToDeg(currentYawRad) + 360) % 360;
-
-    return edges
-        .map(e => {
-            const angleToView = angularDiffDeg(yawDeg, e.bearingDeg);
-            
-            // Enhanced scoring:
-            // - Perfect alignment (0° diff) = 0 points
-            // - 90° off = 90 points  
-            // - 180° off = 180 points
-            let score = angleToView;
-            
-            // Bonus for continuing straight (if we have previous direction)
-            if (lastHopBearingDeg != null) {
-                const continueDiff = angularDiffDeg(lastHopBearingDeg, e.bearingDeg);
-                // Prefer directions close to our last movement (encourage straight lines)
-                score += continueDiff * 0.3;
-            }
-            
-            // Small preference for shorter distances
-            score += e.distanceM * 0.001;
-            
-            return { ...e, angleToView, score };
-        })
-        .sort((a, b) => a.score - b.score)
-        .slice(0, maxOptions);
-}
-
-
 
 function updateMarbleSpacing() {
     const track = getCurrentTrack();
@@ -2796,8 +2665,7 @@ function selectMarble(marbleId) {
     }
 
     // NEW: update branch buttons for this selection
-    refreshBranchButtons();
-}
+    }
 
     function deselectMarble() {
         selectedMarbleId = null;
@@ -3643,41 +3511,15 @@ function updateNavigationRing(instant = false) {
     const marbleIndex = track.marbles.findIndex(m => m.id === selectedMarbleId);
     const total = track.marbles.length;
 
-    // Forward/back logic
-    let canForward = false;
-    let canBackward = false;
-    let canBranch = false;
+    // Simple index-based navigation
+    const canForward = marbleIndex < total - 1;
+    const canBackward = marbleIndex > 0;
 
-    if (marbleIndex < total - 1) canForward = true;
-    if (marbleIndex > 0) canBackward = true;
-
-    // Directional refinement
-    if (marbleIndex > 0 && marbleIndex < total - 1) {
-        const fwd = getBestMarbleInDirection(currentYaw);
-        const back = getBestMarbleInDirection(currentYaw + Math.PI);
-        canForward = !!fwd;
-        canBackward = !!back;
-    }
-
-    const edges = navGraph.get(selectedMarbleId) || [];
-
-    // Junction fix
-    if (edges.length > 2) {
-        canForward = true;
-        canBackward = true;
-    }
-
-    // Branch logic - check for married partners
-    const isEndpoint = marbleIndex === 0 || marbleIndex === total - 1;
-    const totalConnections = edges.length;
-    const hasMarriage = hasMarriedPartners(selectedMarbleId);
-
-    canBranch = hasMarriage || (isEndpoint && totalConnections >= 2) || totalConnections > 2;
+    // Branch only available if marble has married partners
+    const canBranch = hasMarriedPartners(selectedMarbleId);
 
     // Branch positioning logic
-    const showBranchAtBottom = hasMarriage || (isEndpoint && canBranch);
-
-    if (showBranchAtBottom) {
+    if (canBranch) {
         ring.classList.add('has-branch');
     } else {
         ring.classList.remove('has-branch');
@@ -3686,26 +3528,20 @@ function updateNavigationRing(instant = false) {
     // Apply visual state
     if (nextBtn) {
         nextBtn.disabled = !canForward;
-        nextBtn.style.opacity = canForward ? 1 : 0.3;
-        const forwardTarget = getBestMarbleInDirection(currentYaw);
-        nextBtn.title = forwardTarget ?
-            `Navigate to marble ${forwardTarget.index + 1} (${Math.round(forwardTarget.distance)}m)` :
-            'Navigate forward';
+        nextBtn.style.opacity = canForward ? 1 : 0;
+        nextBtn.title = canForward ? 'Move forward' : 'No next marble';
     }
 
     if (prevBtn) {
         prevBtn.disabled = !canBackward;
-        prevBtn.style.opacity = canBackward ? 1 : 0.3;
-        const behindTarget = getBestMarbleInDirection(currentYaw + Math.PI);
-        prevBtn.title = behindTarget ?
-            `Navigate to marble ${behindTarget.index + 1} (${Math.round(behindTarget.distance)}m)` :
-            'Navigate backward';
+        prevBtn.style.opacity = canBackward ? 1 : 0;
+        prevBtn.title = canBackward ? 'Move backward' : 'No previous marble';
     }
 
     if (branchBtn) {
         branchBtn.disabled = !canBranch;
         branchBtn.style.opacity = canBranch ? 1 : 0;
-        branchBtn.title = canBranch ? 'Jump to married partner or branch' : 'No branch available';
+        branchBtn.title = canBranch ? 'Jump to married partner' : 'No branch available';
     }
 
     if (instant) {
@@ -3714,21 +3550,6 @@ function updateNavigationRing(instant = false) {
             ring.style.transition = '';
         });
     }
-}
-
-function getBestMarbleInDirection(directionRad) {
-    if (!selectedMarbleId) return null;
-    
-    const options = getFacingOptions(selectedMarbleId, directionRad, 1);
-    if (options.length === 0) return null;
-    
-    const track = getCurrentTrack();
-    const targetMarble = track.marbles.find(m => m.id === options[0].toMarbleId);
-    
-    return targetMarble ? {
-        index: targetMarble.index,
-        distance: options[0].distanceM
-    } : null;
 }
 
 // ===== IMAGE DISPLAY =====
@@ -3784,7 +3605,6 @@ function nextImage() {
     }
     updateNavigationButtons();
     // NEW: update branch buttons after stepping images
-refreshBranchButtons();
 
 }
 
@@ -3797,7 +3617,6 @@ function previousImage() {
     }
     updateNavigationButtons();
     // NEW: update branch buttons after stepping images
-refreshBranchButtons();
 
 }
 
@@ -3820,8 +3639,7 @@ function showImageByIndex(index, preserveOrientation = false) {
             currentImageIndex = index;
             updateViewerUI();
             highlightMarbleWithImage(index);
-            refreshBranchButtons();
-        }
+                    }
         
         // PRELOAD ADJACENT IMAGES FOR NEXT NAVIGATION
         preloadAdjacentImages();
@@ -3928,82 +3746,7 @@ function showMarbleImage(marbleId) {
     setStatus(`Showing image ${imageIndex + 1}/${currentImages.length} for marble ${marble.index + 1}`);
 
     // NEW: update branch buttons after showing this image
-refreshBranchButtons();
 
-}
-
-function refreshBranchButtons() {
-  if (!selectedMarbleId) {
-    const host = document.getElementById('branch-buttons');
-    if (host) host.innerHTML = '';
-    return;
-  }
-  const picks = getFacingOptions(selectedMarbleId, currentYaw);
-  const host = document.getElementById('branch-buttons');
-  if (!host) return;
-
-  host.innerHTML = ''; // clear
-  picks.forEach((p, idx) => {
-    const btn = document.createElement('button');
-    btn.className = 'small-btn';
-    const meters = Math.round(p.distanceM);
-    btn.textContent = idx === 0 ? `Go → (${meters}m)` : `Alt ${idx+1} →`;
-    btn.onclick = async () => {
-  const track = getCurrentTrack();
-  if (!track) return;
-  
-  // SEARCH IN ALL TRACKS, not just current track
-  let target = null;
-  let targetTrack = null;
-  
-  // Look through all tracks to find the marble
-  for (const [trackId, track] of allTracks) {
-    target = track.marbles.find(m => m.id === p.toMarbleId);
-    if (target) {
-      targetTrack = track;
-      break;
-    }
-  }
-  
-  if (!target) return;
-
-  // Store current map view BEFORE switching
-  const currentZoom = map.getZoom();
-  
-  // If target is in a different track, switch to that track properly
-  if (targetTrack.id !== currentTrackId) {
-    // Switch tracks first
-    selectTrackWithoutMapReset(targetTrack.id);
-    
-    // Load images for the new track
-    await load360Images();
-    
-    // NOW select the target marble after images are loaded
-    selectMarble(target.id);
-  } else {
-    // Same track - just select the marble
-    selectMarble(target.id);
-  }
-
-  // store "continue direction" bias
-  const current = track.marbles.find(m => m.id === selectedMarbleId);
-  if (current) lastHopBearingDeg = bearingDeg(current.position, target.position);
-
-  if (target.assignedImage != null) {
-    showMarbleImage(target.id);
-  } else {
-    // Smoothly move to target position while preserving zoom
-    map.flyTo({
-      center: target.position,
-      zoom: currentZoom, // Keep current zoom level
-      duration: 1000
-    });
-    setStatus(`Moved to marble ${target.index+1}${targetTrack.id !== currentTrackId ? ` in ${targetTrack.name}` : ''}`);
-  }
-  updateNavigationRing(true);
-};
-    host.appendChild(btn);
-  });
 }
 
 function selectTrackWithoutMapReset(trackId) {
@@ -4234,8 +3977,7 @@ function setupViewerEventListeners() {
             updateNavigationRing();
    
                     updateViewCone(); // ADD THIS LINE
-            refreshBranchButtons();
-        }
+                    }
     });
     
     canvas.addEventListener('mouseup', () => {
@@ -4312,8 +4054,7 @@ function setupTouchGestures(canvas) {
             // UPDATE CONE IN REAL-TIME DURING TOUCH PAN
             updateViewCone();
             updateNavigationRing();
-            refreshBranchButtons();
-            
+                        
             e.preventDefault();
         } else if (e.touches.length === 2) {
             // Pinch gesture - zoom
@@ -5024,45 +4765,18 @@ function findMarbleByIdentifier(identifier) {
 document.getElementById('branchImageBtn').addEventListener('click', async () => {
     if (!selectedMarbleId) return;
 
-    // First check for married partners (priority over nearby marbles)
+    // Only jump to married partners
     const marriedPartners = getMarriedPartners(selectedMarbleId);
 
-    if (marriedPartners.length > 0) {
-        const target = marriedPartners[0];
-        const targetTrack = target.track;
-        const targetMarble = target.marble;
-
-        if (targetTrack.id !== currentTrackId) {
-            selectTrackWithoutMapReset(targetTrack.id);
-            await new Promise(r => setTimeout(r, 100));
-        }
-        selectMarble(targetMarble.id);
-        if (targetMarble.assignedImage != null) {
-            showMarbleImage(targetMarble.id);
-        } else {
-            map.flyTo({ center: targetMarble.position, zoom: map.getZoom(), duration: 800 });
-        }
-
-        setStatus(`Jumped to married partner on ${targetTrack.name}`);
+    if (marriedPartners.length === 0) {
+        setStatus('No married partner available');
         return;
     }
 
-    // Fallback: check for nearby marbles (navGraph based)
-    const edges = navGraph.get(selectedMarbleId) || [];
-    const nearby = edges.filter(e => e.distanceM < 10);
-    if (!nearby.length) {
-        setStatus('No branch available');
-        return;
-    }
-
-    const targetEdge = nearby.sort((a, b) => a.distanceM - b.distanceM)[0];
-    let targetTrack = null, targetMarble = null;
-
-    for (const [tid, tr] of allTracks) {
-        const m = tr.marbles.find(x => x.id === targetEdge.toMarbleId);
-        if (m) { targetTrack = tr; targetMarble = m; break; }
-    }
-    if (!targetTrack || !targetMarble) return;
+    // Jump to first married partner
+    const target = marriedPartners[0];
+    const targetTrack = target.track;
+    const targetMarble = target.marble;
 
     if (targetTrack.id !== currentTrackId) {
         selectTrackWithoutMapReset(targetTrack.id);
@@ -5075,7 +4789,7 @@ document.getElementById('branchImageBtn').addEventListener('click', async () => 
         map.flyTo({ center: targetMarble.position, zoom: map.getZoom(), duration: 800 });
     }
 
-    setStatus(`Jumped to ${targetTrack.name} (${Math.round(targetEdge.distanceM)} m)`);
+    setStatus(`Jumped to married partner on ${targetTrack.name}`);
 });
 
     // Initialize the application
