@@ -341,8 +341,46 @@
     left: 50%;
 }
 
+/* Default branch button position (right side) - points right */
+#branchImageBtn.ring-button {
+    right: 15px;
+    top: 50%;
+    left: auto;
+    transform: translateY(-50%);
+}
+
+/* When at endpoint with branch, position branch button at bottom and point down */
+.navigation-ring.has-branch #branchImageBtn.ring-button {
+    bottom: 15px;
+    left: 50%;
+    transform: translateX(-50%) rotate(90deg);
+    right: auto;
+    top: auto;
+}
+
+/* Reposition other buttons when branch is at bottom */
+.navigation-ring.has-branch #nextImageBtn.ring-button {
+    top: 15px;
+    left: 50%;
+    transform: translateX(-50%);
+}
+
+.navigation-ring.has-branch #prevImageBtn.ring-button {
+    top: 50%;
+    left: 70%;
+    transform: translate(-50%, -50%);
+}
+
 .nav-button.ring-button:hover {
     transform: translateX(-50%) scale(1.2);
+}
+
+#branchImageBtn.ring-button:hover {
+    transform: translateY(-50%) scale(1.2);
+}
+
+.navigation-ring.has-branch #branchImageBtn.ring-button:hover {
+    transform: translateX(-50%) rotate(90deg) scale(1.2);
 }
 
 .time {
@@ -591,8 +629,9 @@
     <!-- Navigation ring -->
     <div class="image-controls">
         <div class="navigation-ring">
-            <button class="nav-button ring-button" id="nextImageBtn">▲</button>
-            <button class="nav-button ring-button" id="prevImageBtn">▼</button>
+            <button class="nav-button ring-button" id="nextImageBtn">△</button>
+            <button class="nav-button ring-button" id="prevImageBtn">▽</button>
+            <button class="nav-button ring-button" id="branchImageBtn">▷</button>
         </div>
           <!-- Branch choices (clickable) -->
   <div id="branch-buttons" style="margin-top:8px; display:flex; gap:6px; pointer-events:auto;"></div>
@@ -3590,28 +3629,85 @@ function updateNavigationRing(instant = false) {
     const ring = document.querySelector('.navigation-ring');
     const nextBtn = document.getElementById('nextImageBtn');
     const prevBtn = document.getElementById('prevImageBtn');
-    
+    const branchBtn = document.getElementById('branchImageBtn');
+
     if (!ring || !sphere) return;
-    
+
     // Rotate ring to match view
     let yawDegrees = THREE.MathUtils.radToDeg(currentYaw);
     ring.style.transform = `rotateZ(${-yawDegrees}deg)`;
-    
-    // Update button tooltips with smart navigation info
+
+    const track = getCurrentTrack();
+    if (!track || !selectedMarbleId) return;
+
+    const marbleIndex = track.marbles.findIndex(m => m.id === selectedMarbleId);
+    const total = track.marbles.length;
+
+    // Forward/back logic
+    let canForward = false;
+    let canBackward = false;
+    let canBranch = false;
+
+    if (marbleIndex < total - 1) canForward = true;
+    if (marbleIndex > 0) canBackward = true;
+
+    // Directional refinement
+    if (marbleIndex > 0 && marbleIndex < total - 1) {
+        const fwd = getBestMarbleInDirection(currentYaw);
+        const back = getBestMarbleInDirection(currentYaw + Math.PI);
+        canForward = !!fwd;
+        canBackward = !!back;
+    }
+
+    const edges = navGraph.get(selectedMarbleId) || [];
+
+    // Junction fix
+    if (edges.length > 2) {
+        canForward = true;
+        canBackward = true;
+    }
+
+    // Branch logic - check for married partners
+    const isEndpoint = marbleIndex === 0 || marbleIndex === total - 1;
+    const totalConnections = edges.length;
+    const hasMarriage = hasMarriedPartners(selectedMarbleId);
+
+    canBranch = hasMarriage || (isEndpoint && totalConnections >= 2) || totalConnections > 2;
+
+    // Branch positioning logic
+    const showBranchAtBottom = hasMarriage || (isEndpoint && canBranch);
+
+    if (showBranchAtBottom) {
+        ring.classList.add('has-branch');
+    } else {
+        ring.classList.remove('has-branch');
+    }
+
+    // Apply visual state
     if (nextBtn) {
+        nextBtn.disabled = !canForward;
+        nextBtn.style.opacity = canForward ? 1 : 0.3;
         const forwardTarget = getBestMarbleInDirection(currentYaw);
-        nextBtn.title = forwardTarget ? 
-            `Navigate to marble ${forwardTarget.index + 1} (${Math.round(forwardTarget.distance)}m)` : 
+        nextBtn.title = forwardTarget ?
+            `Navigate to marble ${forwardTarget.index + 1} (${Math.round(forwardTarget.distance)}m)` :
             'Navigate forward';
     }
-    
+
     if (prevBtn) {
+        prevBtn.disabled = !canBackward;
+        prevBtn.style.opacity = canBackward ? 1 : 0.3;
         const behindTarget = getBestMarbleInDirection(currentYaw + Math.PI);
-        prevBtn.title = behindTarget ? 
-            `Navigate to marble ${behindTarget.index + 1} (${Math.round(behindTarget.distance)}m)` : 
+        prevBtn.title = behindTarget ?
+            `Navigate to marble ${behindTarget.index + 1} (${Math.round(behindTarget.distance)}m)` :
             'Navigate backward';
     }
-    
+
+    if (branchBtn) {
+        branchBtn.disabled = !canBranch;
+        branchBtn.style.opacity = canBranch ? 1 : 0;
+        branchBtn.title = canBranch ? 'Jump to married partner or branch' : 'No branch available';
+    }
+
     if (instant) {
         ring.style.transition = 'none';
         requestAnimationFrame(() => {
@@ -4886,6 +4982,101 @@ selectMarble = function(marbleId) {
     originalSelectMarble(marbleId);
     updateDivorceButton();
 };
+
+// Check if marble has married partners
+function hasMarriedPartners(marbleId) {
+    return getMarriedPartners(marbleId).length > 0;
+}
+
+// Get married partners for a marble
+function getMarriedPartners(marbleId) {
+    const identifier = getMarbleIdentifier(marbleId);
+    if (!identifier) return [];
+
+    for (const group of marriageGroups) {
+        if (group.includes(identifier)) {
+            return group.filter(id => id !== identifier).map(id => {
+                const result = findMarbleByIdentifier(id);
+                return result ? { ...result, identifier: id } : null;
+            }).filter(Boolean);
+        }
+    }
+    return [];
+}
+
+// Find marble by identifier string
+function findMarbleByIdentifier(identifier) {
+    const [gpxName, indexStr] = identifier.split(':');
+    const index = parseInt(indexStr);
+
+    for (const [trackId, track] of allTracks) {
+        const trackName = track.name.replace(/\.gpx$/i, '');
+        const searchName = gpxName.replace(/\.gpx$/i, '');
+
+        if (trackName === searchName && track.marbles[index]) {
+            return { marble: track.marbles[index], track, trackId };
+        }
+    }
+    return null;
+}
+
+// Branch button click handler - jump to married partner
+document.getElementById('branchImageBtn').addEventListener('click', async () => {
+    if (!selectedMarbleId) return;
+
+    // First check for married partners (priority over nearby marbles)
+    const marriedPartners = getMarriedPartners(selectedMarbleId);
+
+    if (marriedPartners.length > 0) {
+        const target = marriedPartners[0];
+        const targetTrack = target.track;
+        const targetMarble = target.marble;
+
+        if (targetTrack.id !== currentTrackId) {
+            selectTrackWithoutMapReset(targetTrack.id);
+            await new Promise(r => setTimeout(r, 100));
+        }
+        selectMarble(targetMarble.id);
+        if (targetMarble.assignedImage != null) {
+            showMarbleImage(targetMarble.id);
+        } else {
+            map.flyTo({ center: targetMarble.position, zoom: map.getZoom(), duration: 800 });
+        }
+
+        setStatus(`Jumped to married partner on ${targetTrack.name}`);
+        return;
+    }
+
+    // Fallback: check for nearby marbles (navGraph based)
+    const edges = navGraph.get(selectedMarbleId) || [];
+    const nearby = edges.filter(e => e.distanceM < 10);
+    if (!nearby.length) {
+        setStatus('No branch available');
+        return;
+    }
+
+    const targetEdge = nearby.sort((a, b) => a.distanceM - b.distanceM)[0];
+    let targetTrack = null, targetMarble = null;
+
+    for (const [tid, tr] of allTracks) {
+        const m = tr.marbles.find(x => x.id === targetEdge.toMarbleId);
+        if (m) { targetTrack = tr; targetMarble = m; break; }
+    }
+    if (!targetTrack || !targetMarble) return;
+
+    if (targetTrack.id !== currentTrackId) {
+        selectTrackWithoutMapReset(targetTrack.id);
+        await new Promise(r => setTimeout(r, 100));
+    }
+    selectMarble(targetMarble.id);
+    if (targetMarble.assignedImage != null) {
+        showMarbleImage(targetMarble.id);
+    } else {
+        map.flyTo({ center: targetMarble.position, zoom: map.getZoom(), duration: 800 });
+    }
+
+    setStatus(`Jumped to ${targetTrack.name} (${Math.round(targetEdge.distanceM)} m)`);
+});
 
     // Initialize the application
     initializeApp();
