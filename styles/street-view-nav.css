@@ -17,6 +17,15 @@
   #prevImageBtn.ring-button { bottom:15px; left:50%; }
   .nav-button.ring-button:hover { transform:translateX(-50%) scale(1.08); }
 
+/* Prevent text selection highlight on nav buttons */
+.ring-button {
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
   #viewer-loading {
     display:none; position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
     z-index:100; background:rgba(0,0,0,0.7); padding:16px 20px; border-radius:10px; text-align:center; color:#fff;
