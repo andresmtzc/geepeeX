@@ -1521,8 +1521,8 @@ function panMapToFollowMarble(oldPos, newPos) {
   const deltaLat = newPos[1] - oldPos[1];
   map.easeTo({
     center: [center.lng + deltaLng, center.lat + deltaLat],
-    duration: 300,
-    easing: t => t * (2 - t) // ease-out quadratic
+    duration: 500,
+    easing: t => 1 - Math.pow(1 - t, 3) // ease-out cubic
   });
 }
 
