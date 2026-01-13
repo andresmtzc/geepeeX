@@ -1,0 +1,108 @@
+{
+  "count": 8,
+  "radius": 80,
+  "dotSize": 56,
+  "fontSize": 14,
+  "dotColor": "#fcfaf3",
+  "rotation": 0,
+  "center": 56,
+  "centerColor": "#ffffff",
+  "animDelay": 150,
+  "miniDotsEnabled": false,
+  "miniCount": 4,
+  "miniRadius": 40,
+  "miniSize": 24,
+  "miniFontSize": 11,
+  "miniDotColor": "#60a5fa",
+  "miniRotation": 0,
+  "miniDelay": 100,
+  "dotVisibility": {
+    "0": false,
+    "1": false,
+    "2": false,
+    "3": false,
+    "4": false,
+    "5": false,
+    "6": true,
+    "7": false
+  },
+  "miniDotsVisibility": {
+    "0": true,
+    "1": true,
+    "2": true,
+    "3": true,
+    "4": true,
+    "5": true,
+    "6": true,
+    "7": true
+  },
+  "individualMiniVisibility": {
+    "0": {
+      "0": true,
+      "1": true,
+      "2": true,
+      "3": true
+    },
+    "1": {
+      "0": true,
+      "1": true,
+      "2": true,
+      "3": true
+    },
+    "2": {
+      "0": true,
+      "1": true,
+      "2": true,
+      "3": true
+    },
+    "3": {
+      "0": true,
+      "1": true,
+      "2": true,
+      "3": true
+    },
+    "4": {
+      "0": true,
+      "1": true,
+      "2": true,
+      "3": true
+    },
+    "5": {
+      "0": true,
+      "1": true,
+      "2": true,
+      "3": true
+    },
+    "6": {
+      "0": false,
+      "1": false,
+      "2": false,
+      "3": false
+    },
+    "7": {
+      "0": true,
+      "1": true,
+      "2": true,
+      "3": true
+    }
+  },
+  "miniDotsMirror": {},
+  "dotLabels": {
+    "6": "Senterra"
+  },
+  "miniDotLabels": {},
+  "navigation": {
+    "0": {
+      "center": [
+        -99.9490, 25.1474
+      ],
+      "zoom": 14.1
+    },
+    "6": {
+      "center": [
+-99.9480, 25.1467
+      ],
+      "zoom": 14.4
+    }
+  }
+}
