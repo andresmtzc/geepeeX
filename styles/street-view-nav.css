@@ -1,0 +1,45 @@
+/* Street View Navigation - Branch Button Positioning */
+/* Shared CSS for cpi, inverta, and gpxviewer */
+
+/* Branch button positions based on position class */
+/* 3 o'clock - right side (default) */
+#branchImageBtn.ring-button,
+.navigation-ring.branch-right #branchImageBtn.ring-button {
+  right: 15px;
+  top: 50%;
+  left: auto;
+  bottom: auto;
+  transform: translateY(-50%);
+}
+
+/* 9 o'clock - left side */
+.navigation-ring.branch-left #branchImageBtn.ring-button {
+  left: 15px;
+  top: 50%;
+  right: auto;
+  bottom: auto;
+  transform: translateY(-50%) rotate(180deg);
+}
+
+/* 12 o'clock - top (when at last marble, no next button) */
+.navigation-ring.branch-top #branchImageBtn.ring-button {
+  top: 15px;
+  left: 50%;
+  right: auto;
+  bottom: auto;
+  transform: translateX(-50%) rotate(-90deg);
+}
+
+/* 6 o'clock - bottom (when at first marble, no prev button) */
+.navigation-ring.branch-bottom #branchImageBtn.ring-button {
+  bottom: 15px;
+  left: 50%;
+  right: auto;
+  top: auto;
+  transform: translateX(-50%) rotate(90deg);
+}
+
+/* Hide the old branch-buttons container (no longer used) */
+.small-btn {
+  display: none;
+}
