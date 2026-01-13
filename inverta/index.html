@@ -980,9 +980,6 @@ async function loadGPXFromManifest() {
       selectTrack(firstTrackId);
       console.log(`Loaded ${loadedCount} GPX files with marbles`);
 
-      // Animate marbles appearing in random groups
-      setTimeout(() => animateMarbles(), 100);
-
       // Preload images for married marbles after tracks are loaded
       if (marriageGroups.length > 0) {
         setTimeout(() => preloadMarriedMarbleImages(), 500);
@@ -1337,8 +1334,6 @@ document.getElementById('branchImageBtn').addEventListener('click', async () => 
 });
 
 // ===== MARBLE VISUALIZATION =====
-let marbleAnimationDone = false;
-
 function updateMarbleDisplay(){
   const src = map.getSource('marbles');
   if (!src) return;
@@ -1362,131 +1357,6 @@ function updateMarbleDisplay(){
   });
 
   src.setData({ type:'FeatureCollection', features: all });
-}
-
-// Animate marbles appearing in random groups with fade + scale
-function animateMarbles() {
-  if (marbleAnimationDone) return;
-
-  const groups = 10;           // Number of groups
-  const delay = 100;           // Delay between groups (ms)
-  const fadeDuration = 300;    // Fade duration per group (ms)
-  const finalDelay = 200;      // Delay before showing final layer
-
-  // Collect all marble features
-  const allFeatures = [];
-  allTracks.forEach((track, trackId) => {
-    track.marbles.forEach((m, index) => {
-      const hasImage = m.assignedImage !== null;
-      allFeatures.push({
-        type: 'Feature',
-        geometry: { type: 'Point', coordinates: m.position },
-        properties: {
-          id: m.id,
-          trackId,
-          index,
-          isSelected: false,
-          hasImage
-        }
-      });
-    });
-  });
-
-  if (allFeatures.length === 0) return;
-
-  // Shuffle indices randomly
-  const shuffled = [...Array(allFeatures.length).keys()];
-  for (let i = shuffled.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-  }
-
-  // Divide into groups
-  const groupArr = Array.from({ length: groups }, () => []);
-  shuffled.forEach((i, idx) => groupArr[idx % groups].push(i));
-
-  // Create temporary source + layer for each group
-  groupArr.forEach((g, i) => {
-    const geojson = {
-      type: 'FeatureCollection',
-      features: g.map(idx => allFeatures[idx])
-    };
-
-    map.addSource(`marble-group-${i}`, { type: 'geojson', data: geojson });
-
-    map.addLayer({
-      id: `marble-group-${i}`,
-      type: 'circle',
-      source: `marble-group-${i}`,
-      paint: {
-        'circle-radius': 0,  // Start small
-        'circle-radius-transition': { duration: fadeDuration },
-        'circle-color': ['case',
-          ['==', ['get', 'hasImage'], true], CONFIG.colors.lotMarkerWithImage,
-          CONFIG.colors.brown
-        ],
-        'circle-opacity': 0,
-        'circle-opacity-transition': { duration: fadeDuration },
-        'circle-stroke-width': ['case',
-          ['==', ['get', 'hasImage'], true], 1,
-          0
-        ],
-        'circle-stroke-color': CONFIG.colors.white,
-        'circle-stroke-opacity': 0,
-        'circle-stroke-opacity-transition': { duration: fadeDuration }
-      }
-    });
-
-    // Fade in this group after delay
-    setTimeout(() => {
-      if (map.getLayer(`marble-group-${i}`)) {
-        map.setPaintProperty(`marble-group-${i}`, 'circle-opacity', 1);
-        map.setPaintProperty(`marble-group-${i}`, 'circle-stroke-opacity', 1);
-        map.setPaintProperty(`marble-group-${i}`, 'circle-radius', ['case',
-          ['==', ['get', 'hasImage'], true], 2,
-          3
-        ]);
-      }
-    }, i * delay);
-  });
-
-  // After all groups visible, fade in main layer and clean up groups
-  const totalAnimTime = groups * delay + fadeDuration + finalDelay;
-
-  setTimeout(() => {
-    // Show main marbles layer
-    if (map.getLayer('marbles-layer')) {
-      map.setPaintProperty('marbles-layer', 'circle-opacity', 1);
-      map.setPaintProperty('marbles-layer', 'circle-stroke-opacity', 1);
-    }
-
-    // Fade out and remove group layers
-    setTimeout(() => {
-      groupArr.forEach((_, i) => {
-        const layerId = `marble-group-${i}`;
-        const sourceId = `marble-group-${i}`;
-
-        if (map.getLayer(layerId)) {
-          map.setPaintProperty(layerId, 'circle-opacity', 0);
-          map.setPaintProperty(layerId, 'circle-stroke-opacity', 0);
-        }
-      });
-
-      // Remove layers after fade out
-      setTimeout(() => {
-        groupArr.forEach((_, i) => {
-          const layerId = `marble-group-${i}`;
-          const sourceId = `marble-group-${i}`;
-
-          if (map.getLayer(layerId)) map.removeLayer(layerId);
-          if (map.getSource(sourceId)) map.removeSource(sourceId);
-        });
-
-        marbleAnimationDone = true;
-        console.log('✅ Marble animation complete');
-      }, fadeDuration);
-    }, fadeDuration);
-  }, totalAnimTime);
 }
 
 // ===== MAP INTERACTIONS FOR MARBLES =====
@@ -3560,32 +3430,39 @@ function setupCommunitySearchMenu() {
           data: { type:'FeatureCollection', features: [] } 
         });
 
-        // VISIBLE marbles layer (starts hidden for animation)
+        // VISIBLE marbles layer (fades in/out based on zoom)
         map.addLayer({
           id: 'marbles-layer',
           type: 'circle',
           source: 'marbles',
+          minzoom: 16,
           paint: {
             'circle-radius': ['case',
               ['==', ['get', 'isSelected'], true], 6,
-              ['==', ['get', 'hasImage'], true], 2, // Larger for marbles with images
-              3 // Smaller for marbles without images
+              ['==', ['get', 'hasImage'], true], 2,
+              3
             ],
             'circle-color': ['case',
               ['==', ['get', 'isSelected'], true], CONFIG.colors.primary,
-              ['==', ['get', 'hasImage'], true], CONFIG.colors.lotMarkerWithImage, // GREEN for marbles with images
-              CONFIG.colors.brown // Brown for marbles without images
+              ['==', ['get', 'hasImage'], true], CONFIG.colors.lotMarkerWithImage,
+              CONFIG.colors.brown
             ],
             'circle-stroke-width': ['case',
               ['==', ['get', 'isSelected'], true], 0,
-              ['==', ['get', 'hasImage'], true], 1, // Thin stroke for marbles with images
+              ['==', ['get', 'hasImage'], true], 1,
               0
             ],
             'circle-stroke-color': CONFIG.colors.white,
-            'circle-opacity': 0, // Start hidden for animation
-            'circle-opacity-transition': { duration: 300 },
-            'circle-stroke-opacity': 0,
-            'circle-stroke-opacity-transition': { duration: 300 }
+            'circle-opacity': [
+              'interpolate', ['linear'], ['zoom'],
+              16.0, 0,
+              16.5, 1
+            ],
+            'circle-stroke-opacity': [
+              'interpolate', ['linear'], ['zoom'],
+              16.0, 0,
+              16.5, 1
+            ]
           }
         });
 
@@ -3594,10 +3471,11 @@ function setupCommunitySearchMenu() {
           id: 'marbles-click-layer',
           type: 'circle',
           source: 'marbles',
-          paint: { 
-            'circle-radius': 8, 
-            'circle-opacity': 0, 
-            'circle-stroke-width': 0 
+          minzoom: 16,
+          paint: {
+            'circle-radius': 8,
+            'circle-opacity': 0,
+            'circle-stroke-width': 0
           }
         });
 
