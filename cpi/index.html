@@ -1325,6 +1325,11 @@ document.getElementById('branchImageBtn').addEventListener('click', async () => 
     return;
   }
 
+  // Get old marble position for map panning
+  const track = getCurrentTrack();
+  const oldMarble = track?.marbles.find(m => m.id === selectedMarbleId);
+  const oldPos = oldMarble?.position;
+
   // Jump to first married partner
   const target = marriedPartners[0];
   const targetTrack = target.track;
@@ -1336,7 +1341,9 @@ document.getElementById('branchImageBtn').addEventListener('click', async () => 
   }
   selectMarble(targetMarble.id);
   if (targetMarble.assignedImage != null) showMarbleImage(targetMarble.id);
-  else map.flyTo({ center: targetMarble.position, zoom: map.getZoom(), duration: 800 });
+
+  // Pan map to follow marble
+  panMapToFollowMarble(oldPos, targetMarble.position);
 
   console.log(`Jumped to married partner on ${targetTrack.name}`);
 });
@@ -1506,20 +1513,47 @@ function preloadOne(index) {
   });
 }
 
+// Pan map to follow marble navigation (relative pan by delta between positions)
+function panMapToFollowMarble(oldPos, newPos) {
+  if (!oldPos || !newPos) return;
+  const center = map.getCenter();
+  const deltaLng = newPos[0] - oldPos[0];
+  const deltaLat = newPos[1] - oldPos[1];
+  map.easeTo({
+    center: [center.lng + deltaLng, center.lat + deltaLat],
+    duration: 300,
+    easing: t => t * (2 - t) // ease-out quadratic
+  });
+}
+
+// Get marble position by image index
+function getMarblePositionByImageIndex(imageIndex) {
+  const track = getCurrentTrack();
+  if (!track) return null;
+  const marble = track.marbles.find(m => m.assignedImage === imageIndex);
+  return marble ? marble.position : null;
+}
+
 function nextImage() {
   if (currentImageIndex < currentImages.length - 1) {
+    const oldPos = getMarblePositionByImageIndex(currentImageIndex);
     currentImageIndex++;
     showImageByIndex(currentImageIndex);
     updateNavigationRing(true);
+    const newPos = getMarblePositionByImageIndex(currentImageIndex);
+    panMapToFollowMarble(oldPos, newPos);
   }
   updateViewerUI();
 }
 
 function previousImage() {
   if (currentImageIndex > 0) {
+    const oldPos = getMarblePositionByImageIndex(currentImageIndex);
     currentImageIndex--;
     showImageByIndex(currentImageIndex);
     updateNavigationRing(true);
+    const newPos = getMarblePositionByImageIndex(currentImageIndex);
+    panMapToFollowMarble(oldPos, newPos);
   }
   updateViewerUI();
 }
