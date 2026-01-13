@@ -187,7 +187,6 @@
       <trkpt lat="25.149949" lon="-99.953337"></trkpt>
       <trkpt lat="25.149967" lon="-99.953403"></trkpt>
       <trkpt lat="25.150000" lon="-99.953449"></trkpt>
-      <trkpt lat="25.150040" lon="-99.953498"></trkpt>
     </trkseg>
   </trk>
   <wpt lat="25.147425" lon="-99.949404">
@@ -917,9 +916,5 @@
   <wpt lat="25.149967" lon="-99.953401">
     <name>Photo_183 - Image 183 - Image 183 - Image 183</name>
     <desc>Marble position along route - Image 183</desc>
-  </wpt>
-  <wpt lat="25.150040" lon="-99.953498">
-    <name>Photo_184 - Image 184 - Image 184 - Image 184</name>
-    <desc>Marble position along route - Image 184</desc>
   </wpt>
 </gpx>
