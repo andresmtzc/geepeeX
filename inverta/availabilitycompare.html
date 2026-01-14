@@ -723,8 +723,24 @@
         alert(`✅ Successfully marked ${lots.length} lots as Sold!`);
         console.log('✅ Update successful');
 
-        // Reload to show updated results
-        setTimeout(() => location.reload(), 1500);
+        // Re-process the PDFs to show updated results (instead of full page reload)
+        if (selectedFiles && selectedFiles.length > 0) {
+          console.log('♻️ Re-processing PDFs to show updated results...');
+          setTimeout(async () => {
+            compareBtn.disabled = true;
+            loading.classList.add('active');
+            results.classList.remove('active');
+            try {
+              await processAndCompareMultiple(selectedFiles);
+            } catch (error) {
+              console.error('Error re-processing:', error);
+              showError('Updated successfully but failed to refresh results. Please reload manually.');
+            } finally {
+              compareBtn.disabled = false;
+              loading.classList.remove('active');
+            }
+          }, 1000);
+        }
 
         return true;
       } catch (error) {
@@ -767,8 +783,24 @@
         alert(`✅ Successfully marked ${lots.length} lots as Available!`);
         console.log('✅ Update successful');
 
-        // Reload to show updated results
-        setTimeout(() => location.reload(), 1500);
+        // Re-process the PDFs to show updated results (instead of full page reload)
+        if (selectedFiles && selectedFiles.length > 0) {
+          console.log('♻️ Re-processing PDFs to show updated results...');
+          setTimeout(async () => {
+            compareBtn.disabled = true;
+            loading.classList.add('active');
+            results.classList.remove('active');
+            try {
+              await processAndCompareMultiple(selectedFiles);
+            } catch (error) {
+              console.error('Error re-processing:', error);
+              showError('Updated successfully but failed to refresh results. Please reload manually.');
+            } finally {
+              compareBtn.disabled = false;
+              loading.classList.remove('active');
+            }
+          }, 1000);
+        }
 
         return true;
       } catch (error) {
