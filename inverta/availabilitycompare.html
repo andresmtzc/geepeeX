@@ -1179,13 +1179,17 @@
 
         dbLots.forEach(lot => {
           // Extract manzana-lote from lot_name (e.g., "lotinverta24-09" -> "24-09")
-          const match = lot.lot_name.match(/lotinverta[p]?(\d+-\d+)/i);
+          const match = lot.lot_name.match(/lotinverta[p]?(\d+)-(\d+)/i);
           if (match) {
-            const formatted = match[1];
+            // Normalize to 2-digit format for matching (pad with zeros)
+            const manzana = match[1].padStart(2, '0');
+            const lote = match[2].padStart(2, '0');
+            const formatted = `${manzana}-${lote}`;  // e.g., "04-50"
+
             const lotInfo = {
               ...lot,
               formatted: formatted,
-              displayName: `${lot.fraccionamiento} ${formatted}` // e.g., "MARSELLA 10-29"
+              displayName: `${lot.fraccionamiento} ${formatted}` // e.g., "MARSELLA 04-50"
             };
 
             if (lot.availability && lot.availability.toLowerCase() === 'sold') {
@@ -1291,13 +1295,17 @@
 
       dbLots.forEach(lot => {
         // Extract manzana-lote from lot_name (e.g., "lotinverta24-09" -> "24-09")
-        const match = lot.lot_name.match(/lotinverta[p]?(\d+-\d+)/i);
+        const match = lot.lot_name.match(/lotinverta[p]?(\d+)-(\d+)/i);
         if (match) {
-          const formatted = match[1];
+          // Normalize to 2-digit format for matching (pad with zeros)
+          const manzana = match[1].padStart(2, '0');
+          const lote = match[2].padStart(2, '0');
+          const formatted = `${manzana}-${lote}`;  // e.g., "04-50"
+
           const lotInfo = {
             ...lot,
             formatted: formatted,
-            displayName: `${lot.fraccionamiento} ${formatted}` // e.g., "MARSELLA 10-29"
+            displayName: `${lot.fraccionamiento} ${formatted}` // e.g., "MARSELLA 04-50"
           };
 
           if (lot.availability && lot.availability.toLowerCase() === 'sold') {
