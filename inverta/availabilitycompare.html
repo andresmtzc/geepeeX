@@ -1085,30 +1085,28 @@
       return uniqueLots;
     }
 
-    async function queryDatabase(fraccionamiento) {
-      if (!supabaseClient) {
-        throw new Error('Supabase not initialized');
-      }
+async function queryDatabase(fraccionamiento) {
+  if (!supabaseClient) {
+    throw new Error('Supabase not initialized');
+  }
 
-      // Query lots table filtering by fraccionamiento
-      // We get lot_name, availability, and fraccionamiento columns
-      const { data, error } = await supabaseClient
-        .from('lots')
-        .select('lot_name, availability, fraccionamiento')
-        .ilike('fraccionamiento', fraccionamiento); // Case-insensitive match
+  const { data, error } = await supabaseClient
+    .from('lots')
+    .select('lot_name, availability, fraccionamiento, client_id')
+    .eq('client_id', CURRENT_CLIENT)  // ⬅️ ADD THIS LINE
+    .ilike('fraccionamiento', fraccionamiento);
 
-      if (error) {
-        throw new Error(`Database query failed: ${error.message}`);
-      }
+  if (error) {
+    throw new Error(`Database query failed: ${error.message}`);
+  }
 
-      console.log('💾 Raw DB results for fraccionamiento "' + fraccionamiento + '":', data.length);
-      if (data && data.length > 0) {
-        console.log('💾 Sample DB records:', data.slice(0, 3));
-        console.log('💾 Unique fraccionamientos in results:', [...new Set(data.map(d => d.fraccionamiento))]);
-      }
+  console.log('💾 Raw DB results for fraccionamiento "' + fraccionamiento + '":', data.length);
+  if (data && data.length > 0) {
+    console.log('💾 Sample DB records:', data.slice(0, 3));
+  }
 
-      return data || [];
-    }
+  return data || [];
+}
 
     function compareAndDisplayMultiple(allResults) {
       // Combine all results from multiple PDFs
