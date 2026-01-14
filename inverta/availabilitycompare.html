@@ -291,7 +291,7 @@
         <div class="upload-icon">📄</div>
         <div class="upload-text">Click or drag PDF here</div>
         <div class="upload-hint">Supported format: PDF files with inventory data</div>
-        <input type="file" id="fileInput" accept=".pdf">
+        <input type="file" id="fileInput" accept=".pdf" multiple>
       </div>
 
       <div class="selected-file" id="selectedFile" style="display: none;">
@@ -388,7 +388,7 @@
     const errorDiv = document.getElementById('errorDiv');
     const errorMessage = document.getElementById('errorMessage');
 
-    let selectedFile = null;
+    let selectedFiles = [];
 
     // Initialize on load
     initSupabase();
@@ -400,7 +400,7 @@
 
     // File selection
     fileInput.addEventListener('change', (e) => {
-      handleFileSelect(e.target.files[0]);
+      handleFileSelect(e.target.files);
     });
 
     // Drag and drop
@@ -416,19 +416,25 @@
     uploadArea.addEventListener('drop', (e) => {
       e.preventDefault();
       uploadArea.classList.remove('dragover');
-      handleFileSelect(e.dataTransfer.files[0]);
+      handleFileSelect(e.dataTransfer.files);
     });
 
-    function handleFileSelect(file) {
-      if (!file) return;
+    function handleFileSelect(files) {
+      if (!files || files.length === 0) return;
 
-      if (!file.name.toLowerCase().endsWith('.pdf')) {
-        showError('Please select a PDF file');
+      // Filter for PDF files only
+      const pdfFiles = Array.from(files).filter(file =>
+        file.name.toLowerCase().endsWith('.pdf')
+      );
+
+      if (pdfFiles.length === 0) {
+        showError('Please select at least one PDF file');
         return;
       }
 
-      selectedFile = file;
-      fileNameSpan.textContent = file.name;
+      selectedFiles = pdfFiles;
+      const fileNames = pdfFiles.map(f => f.name).join(', ');
+      fileNameSpan.textContent = `${pdfFiles.length} file(s): ${fileNames}`;
       selectedFileDiv.style.display = 'block';
       compareBtn.style.display = 'block';
       hideError();
@@ -436,7 +442,7 @@
 
     // Compare button
     compareBtn.addEventListener('click', async () => {
-      if (!selectedFile) return;
+      if (selectedFiles.length === 0) return;
 
       compareBtn.disabled = true;
       loading.classList.add('active');
@@ -444,7 +450,7 @@
       hideError();
 
       try {
-        await processAndCompare(selectedFile);
+        await processAndCompareMultiple(selectedFiles);
       } catch (error) {
         console.error('Error processing:', error);
         showError(error.message || 'An error occurred while processing the PDF');
@@ -453,6 +459,50 @@
         loading.classList.remove('active');
       }
     });
+
+    async function processAndCompareMultiple(files) {
+      // Process all PDFs and combine results
+      const allResults = [];
+
+      for (const file of files) {
+        console.log('\n📄 Processing:', file.name);
+
+        // Step 1: Extract fraccionamiento from filename
+        const fraccionamiento = extractFraccionamiento(file.name);
+        if (!fraccionamiento) {
+          console.warn('⚠️ Skipping file (could not extract fraccionamiento):', file.name);
+          continue;
+        }
+        console.log('📍 Fraccionamiento:', fraccionamiento);
+
+        // Step 2: Parse PDF to extract lot numbers
+        const pdfLots = await parsePDF(file);
+        if (pdfLots.length === 0) {
+          console.warn('⚠️ No lots found in PDF:', file.name);
+          continue;
+        }
+        console.log('📄 Lots found in PDF:', pdfLots.length, pdfLots.slice(0, 5));
+
+        // Step 3: Query database for lots in this fraccionamiento
+        const dbLots = await queryDatabase(fraccionamiento);
+        console.log('💾 Lots found in DB for', fraccionamiento, ':', dbLots.length);
+
+        // Store results for this fraccionamiento
+        allResults.push({
+          fraccionamiento,
+          fileName: file.name,
+          pdfLots,
+          dbLots
+        });
+      }
+
+      if (allResults.length === 0) {
+        throw new Error('No valid PDFs were processed');
+      }
+
+      // Step 4: Compare and display all results
+      compareAndDisplayMultiple(allResults);
+    }
 
     async function processAndCompare(file) {
       // Step 1: Extract fraccionamiento from filename
@@ -548,9 +598,109 @@
         throw new Error(`Database query failed: ${error.message}`);
       }
 
-      console.log('💾 Raw DB results:', data.length, data.slice(0, 5));
+      console.log('💾 Raw DB results for fraccionamiento "' + fraccionamiento + '":', data.length);
+      if (data && data.length > 0) {
+        console.log('💾 Sample DB records:', data.slice(0, 3));
+        console.log('💾 Unique fraccionamientos in results:', [...new Set(data.map(d => d.fraccionamiento))]);
+      }
 
       return data || [];
+    }
+
+    function compareAndDisplayMultiple(allResults) {
+      // Combine all results from multiple PDFs
+      let totalPdfLots = 0;
+      let totalDbLots = 0;
+      let allLikelySold = [];
+      let allMismatches = [];
+
+      allResults.forEach(result => {
+        const { fraccionamiento, pdfLots, dbLots } = result;
+
+        const pdfLotSet = new Set(pdfLots.map(lot => lot.formatted));
+
+        // Separate DB lots into Available and Sold
+        const dbAvailableLots = [];
+        const dbSoldLots = [];
+
+        dbLots.forEach(lot => {
+          // Extract manzana-lote from lot_name (e.g., "lotinverta24-09" -> "24-09")
+          const match = lot.lot_name.match(/lotinverta[p]?(\d+-\d+)/i);
+          if (match) {
+            const formatted = match[1];
+            const lotInfo = {
+              ...lot,
+              formatted: formatted,
+              displayName: `${lot.fraccionamiento} ${formatted}` // e.g., "MARSELLA 10-29"
+            };
+
+            if (lot.availability && lot.availability.toLowerCase() === 'sold') {
+              dbSoldLots.push(lotInfo);
+            } else {
+              dbAvailableLots.push(lotInfo);
+            }
+          }
+        });
+
+        console.log('🔍 Comparison for', fraccionamiento + ':');
+        console.log('  PDF lots:', Array.from(pdfLotSet));
+        console.log('  DB Available lots:', dbAvailableLots.map(l => `${l.formatted} (${l.availability})`));
+        console.log('  DB Sold lots:', dbSoldLots.map(l => `${l.formatted} (${l.availability})`));
+
+        // Find lots that are Available in DB but NOT in PDF (likely sold)
+        const likelySold = dbAvailableLots.filter(lot => !pdfLotSet.has(lot.formatted));
+
+        // Find lots that are in PDF but marked Sold in DB (mismatches - edge case)
+        const mismatches = dbSoldLots.filter(lot => pdfLotSet.has(lot.formatted));
+
+        console.log('📊 Results for', fraccionamiento + ':');
+        console.log('  Likely sold:', likelySold.length, likelySold.map(l => l.formatted));
+        console.log('  Mismatches:', mismatches.length, mismatches.map(l => l.formatted));
+
+        totalPdfLots += pdfLots.length;
+        totalDbLots += dbAvailableLots.length;
+        allLikelySold.push(...likelySold);
+        allMismatches.push(...mismatches);
+      });
+
+      // Update stats
+      document.getElementById('statPdfLots').textContent = totalPdfLots;
+      document.getElementById('statDbLots').textContent = totalDbLots;
+      document.getElementById('statSold').textContent = allLikelySold.length;
+      document.getElementById('statMismatch').textContent = allMismatches.length;
+
+      // Display sold lots
+      const soldList = document.getElementById('soldList');
+      soldList.innerHTML = '';
+      if (allLikelySold.length === 0) {
+        soldList.innerHTML = '<div class="empty-state"><div class="empty-state-icon">✅</div><div>No discrepancies found! All available lots in DB match the PDF.</div></div>';
+      } else {
+        allLikelySold.forEach(lot => {
+          const div = document.createElement('div');
+          div.className = 'lot-item sold';
+          div.textContent = lot.displayName; // Shows "MARSELLA 10-29" instead of "lotinverta10-29"
+          div.title = `DB: ${lot.lot_name} | Availability: ${lot.availability}`;
+          soldList.appendChild(div);
+        });
+      }
+
+      // Display mismatches
+      const mismatchList = document.getElementById('mismatchList');
+      mismatchList.innerHTML = '';
+      if (allMismatches.length === 0) {
+        mismatchList.innerHTML = '<div class="empty-state"><div class="empty-state-icon">✅</div><div>No mismatches found.</div></div>';
+      } else {
+        allMismatches.forEach(lot => {
+          const div = document.createElement('div');
+          div.className = 'lot-item mismatch';
+          div.textContent = lot.displayName; // Shows "MARSELLA 10-29" instead of "lotinverta10-29"
+          div.title = `In PDF but marked Sold in DB | DB: ${lot.lot_name} | Availability: ${lot.availability}`;
+          mismatchList.appendChild(div);
+        });
+      }
+
+      // Show results
+      results.classList.add('active');
     }
 
     function compareAndDisplay(pdfLots, dbLots, fraccionamiento) {
@@ -568,7 +718,8 @@
           const formatted = match[1];
           const lotInfo = {
             ...lot,
-            formatted: formatted
+            formatted: formatted,
+            displayName: `${lot.fraccionamiento} ${formatted}` // e.g., "MARSELLA 10-29"
           };
 
           if (lot.availability && lot.availability.toLowerCase() === 'sold') {
@@ -581,8 +732,8 @@
 
       console.log('🔍 Comparison:');
       console.log('  PDF lots:', Array.from(pdfLotSet));
-      console.log('  DB Available lots:', dbAvailableLots.map(l => l.formatted));
-      console.log('  DB Sold lots:', dbSoldLots.map(l => l.formatted));
+      console.log('  DB Available lots:', dbAvailableLots.map(l => `${l.formatted} (${l.availability})`));
+      console.log('  DB Sold lots:', dbSoldLots.map(l => `${l.formatted} (${l.availability})`));
 
       // Find lots that are Available in DB but NOT in PDF (likely sold)
       const likelySold = dbAvailableLots.filter(lot => !pdfLotSet.has(lot.formatted));
@@ -609,7 +760,8 @@
         likelySold.forEach(lot => {
           const div = document.createElement('div');
           div.className = 'lot-item sold';
-          div.textContent = lot.lot_name;
+          div.textContent = lot.displayName; // Shows "MARSELLA 10-29" instead of "lotinverta10-29"
+          div.title = `DB: ${lot.lot_name} | Availability: ${lot.availability}`;
           soldList.appendChild(div);
         });
       }
@@ -623,8 +775,8 @@
         mismatches.forEach(lot => {
           const div = document.createElement('div');
           div.className = 'lot-item mismatch';
-          div.textContent = lot.lot_name;
-          div.title = 'In PDF but marked Sold in DB';
+          div.textContent = lot.displayName; // Shows "MARSELLA 10-29" instead of "lotinverta10-29"
+          div.title = `In PDF but marked Sold in DB | DB: ${lot.lot_name} | Availability: ${lot.availability}`;
           mismatchList.appendChild(div);
         });
       }
