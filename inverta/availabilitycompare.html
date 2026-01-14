@@ -497,11 +497,26 @@
       <p style="color: #666; margin-bottom: 20px; font-size: 14px;">
         Login required to update database records
       </p>
-      <input type="email" id="loginEmail" placeholder="Email" />
-      <input type="password" id="loginPassword" placeholder="Password" />
-      <div class="login-actions">
-        <button class="cancel-btn" id="cancelLoginBtn">Cancel</button>
-        <button id="submitLoginBtn">Login</button>
+
+      <!-- Step 1: Email -->
+      <div id="authStepEmail">
+        <input type="email" id="loginEmail" placeholder="Email" />
+        <div class="login-actions">
+          <button class="cancel-btn" id="cancelLoginBtn">Cancel</button>
+          <button id="requestOtpBtn">Send Code</button>
+        </div>
+      </div>
+
+      <!-- Step 2: OTP Code -->
+      <div id="authStepOtp" style="display: none;">
+        <p style="color: #666; margin-bottom: 15px; font-size: 14px;">
+          Code sent to <strong id="otpEmailDisplay"></strong>
+        </p>
+        <input type="text" id="loginOtp" placeholder="6-digit code" maxlength="6" />
+        <div class="login-actions">
+          <button class="cancel-btn" id="cancelOtpBtn">Cancel</button>
+          <button id="verifyOtpBtn">Verify Code</button>
+        </div>
       </div>
     </div>
   </div>
@@ -518,6 +533,8 @@
     let currentUser = null;
     let currentLikelySoldLots = [];
     let currentMismatchLots = [];
+    let pendingEmail = null;
+    const CURRENT_CLIENT = 'inverta'; // Match your client config
 
     // Load Supabase config
     async function initSupabase() {
@@ -540,6 +557,22 @@
         showError('Failed to connect to database. Please check your internet connection.');
         return false;
       }
+    }
+
+    // Check if email is allowed in editors table
+    async function isEmailAllowed(email) {
+      const { data, error } = await supabaseClient
+        .from('editors')
+        .select('id')
+        .eq('email', email.trim().toLowerCase())
+        .eq('client_id', CURRENT_CLIENT)
+        .maybeSingle();
+
+      if (error) {
+        console.error('Allowlist check failed:', error);
+        return false;
+      }
+      return !!data;
     }
 
     // Authentication Functions
@@ -591,26 +624,65 @@
       }
     }
 
-    async function login(email, password) {
+    async function requestOtp(email) {
       try {
-        const { data, error } = await supabaseClient.auth.signInWithPassword({
+        // Check if email is allowed
+        const allowed = await isEmailAllowed(email);
+        if (!allowed) {
+          showError('This email is not authorized to update records');
+          return false;
+        }
+
+        const { error } = await supabaseClient.auth.signInWithOtp({
           email,
-          password
+          options: { emailRedirectTo: window.location.origin }
+        });
+
+        if (error) throw error;
+
+        pendingEmail = email;
+        console.log('✅ OTP sent to', email);
+        return true;
+      } catch (error) {
+        console.error('❌ OTP request error:', error);
+        if (error.message && error.message.includes('rate limit')) {
+          showError('Too many requests. Please wait a few minutes and try again.');
+        } else {
+          showError(`Failed to send code: ${error.message}`);
+        }
+        return false;
+      }
+    }
+
+    async function verifyOtp(token) {
+      try {
+        const { data, error } = await supabaseClient.auth.verifyOtp({
+          email: pendingEmail,
+          token,
+          type: 'email'
         });
 
         if (error) throw error;
 
         currentUser = data.user;
         updateAuthUI(true, data.user.email);
+        resetLoginModal();
         document.getElementById('loginModal').classList.remove('active');
         console.log('✅ Logged in successfully');
-
         return true;
       } catch (error) {
-        console.error('❌ Login error:', error);
-        showError(`Login failed: ${error.message}`);
+        console.error('❌ OTP verification error:', error);
+        showError('Invalid or expired code');
         return false;
       }
+    }
+
+    function resetLoginModal() {
+      document.getElementById('loginEmail').value = '';
+      document.getElementById('loginOtp').value = '';
+      document.getElementById('authStepEmail').style.display = 'block';
+      document.getElementById('authStepOtp').style.display = 'none';
+      pendingEmail = null;
     }
 
     async function logout() {
@@ -632,7 +704,7 @@
         return false;
       }
 
-      if (!confirm(`Are you sure you want to mark ${lots.length} lots as SOLD?`)) {
+      if (!confirm(`Are you sure you want to mark ${lots.length} lots as SOLD?\n\nThis will update the database.`)) {
         return false;
       }
 
@@ -657,7 +729,15 @@
         return true;
       } catch (error) {
         console.error('❌ Update error:', error);
-        showError(`Failed to update lots: ${error.message}`);
+
+        // Handle specific permission errors
+        if (error.code === '42501' || error.message.includes('permission') || error.message.includes('policy')) {
+          showError('You do not have permission to update lots. Only authorized editors can modify the database.');
+        } else if (error.message.includes('JWT')) {
+          showError('Your session has expired. Please log out and log in again.');
+        } else {
+          showError(`Failed to update lots: ${error.message}`);
+        }
         return false;
       }
     }
@@ -668,7 +748,7 @@
         return false;
       }
 
-      if (!confirm(`Are you sure you want to mark ${lots.length} lots as AVAILABLE?`)) {
+      if (!confirm(`Are you sure you want to mark ${lots.length} lots as AVAILABLE?\n\nThis will update the database.`)) {
         return false;
       }
 
@@ -693,7 +773,15 @@
         return true;
       } catch (error) {
         console.error('❌ Update error:', error);
-        showError(`Failed to update lots: ${error.message}`);
+
+        // Handle specific permission errors
+        if (error.code === '42501' || error.message.includes('permission') || error.message.includes('policy')) {
+          showError('You do not have permission to update lots. Only authorized editors can modify the database.');
+        } else if (error.message.includes('JWT')) {
+          showError('Your session has expired. Please log out and log in again.');
+        } else {
+          showError(`Failed to update lots: ${error.message}`);
+        }
         return false;
       }
     }
@@ -716,31 +804,86 @@
 
     // Auth event listeners
     document.getElementById('loginBtn').addEventListener('click', () => {
+      resetLoginModal();
       document.getElementById('loginModal').classList.add('active');
     });
 
     document.getElementById('logoutBtn').addEventListener('click', logout);
 
     document.getElementById('cancelLoginBtn').addEventListener('click', () => {
+      resetLoginModal();
       document.getElementById('loginModal').classList.remove('active');
     });
 
-    document.getElementById('submitLoginBtn').addEventListener('click', async () => {
-      const email = document.getElementById('loginEmail').value;
-      const password = document.getElementById('loginPassword').value;
+    document.getElementById('cancelOtpBtn').addEventListener('click', () => {
+      resetLoginModal();
+      document.getElementById('loginModal').classList.remove('active');
+    });
 
-      if (!email || !password) {
-        showError('Please enter email and password');
+    // Request OTP code
+    document.getElementById('requestOtpBtn').addEventListener('click', async () => {
+      const email = document.getElementById('loginEmail').value.trim().toLowerCase();
+
+      if (!email) {
+        showError('Please enter your email');
         return;
       }
 
-      await login(email, password);
+      const looksLikeEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+      if (!looksLikeEmail) {
+        showError('Please enter a valid email');
+        return;
+      }
+
+      const btn = document.getElementById('requestOtpBtn');
+      const originalText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Sending...';
+
+      const success = await requestOtp(email);
+
+      if (success) {
+        document.getElementById('otpEmailDisplay').textContent = email;
+        document.getElementById('authStepEmail').style.display = 'none';
+        document.getElementById('authStepOtp').style.display = 'block';
+        hideError();
+        setTimeout(() => document.getElementById('loginOtp').focus(), 100);
+      }
+
+      btn.disabled = false;
+      btn.textContent = originalText;
     });
 
-    // Allow Enter key to submit login
-    document.getElementById('loginPassword').addEventListener('keypress', (e) => {
+    // Verify OTP code
+    document.getElementById('verifyOtpBtn').addEventListener('click', async () => {
+      const token = document.getElementById('loginOtp').value.trim();
+
+      if (token.length !== 6) {
+        showError('Code must be 6 digits');
+        return;
+      }
+
+      const btn = document.getElementById('verifyOtpBtn');
+      const originalText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Verifying...';
+
+      await verifyOtp(token);
+
+      btn.disabled = false;
+      btn.textContent = originalText;
+    });
+
+    // Allow Enter key to submit
+    document.getElementById('loginEmail').addEventListener('keypress', (e) => {
       if (e.key === 'Enter') {
-        document.getElementById('submitLoginBtn').click();
+        document.getElementById('requestOtpBtn').click();
+      }
+    });
+
+    document.getElementById('loginOtp').addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') {
+        document.getElementById('verifyOtpBtn').click();
       }
     });
 
