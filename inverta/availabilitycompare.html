@@ -274,6 +274,124 @@
       font-size: 64px;
       margin-bottom: 15px;
     }
+
+    .auth-section {
+      background: #f8f9ff;
+      padding: 15px;
+      border-radius: 8px;
+      margin-bottom: 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .auth-status {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .auth-indicator {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #ccc;
+    }
+
+    .auth-indicator.authenticated {
+      background: #4caf50;
+    }
+
+    .auth-buttons {
+      display: flex;
+      gap: 10px;
+    }
+
+    .auth-btn {
+      padding: 8px 20px;
+      font-size: 14px;
+      margin: 0;
+    }
+
+    .update-btn {
+      background: linear-gradient(135deg, #4caf50 0%, #45a049 100%);
+      margin-right: 10px;
+      display: inline-block;
+    }
+
+    .update-btn:hover {
+      box-shadow: 0 5px 15px rgba(76, 175, 80, 0.3);
+    }
+
+    .update-btn.danger {
+      background: linear-gradient(135deg, #f44336 0%, #e91e63 100%);
+    }
+
+    .section-actions {
+      margin-top: 15px;
+      padding-top: 15px;
+      border-top: 2px solid #f0f0f0;
+    }
+
+    #loginModal {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0,0,0,0.5);
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+    }
+
+    #loginModal.active {
+      display: flex;
+    }
+
+    .login-card {
+      background: white;
+      padding: 40px;
+      border-radius: 12px;
+      max-width: 400px;
+      width: 90%;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+    }
+
+    .login-card h2 {
+      margin-bottom: 20px;
+      color: #667eea;
+    }
+
+    .login-card input {
+      width: 100%;
+      padding: 12px;
+      margin-bottom: 15px;
+      border: 2px solid #e0e0e0;
+      border-radius: 6px;
+      font-size: 14px;
+    }
+
+    .login-card input:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+
+    .login-actions {
+      display: flex;
+      gap: 10px;
+      margin-top: 20px;
+    }
+
+    .login-actions button {
+      flex: 1;
+      margin: 0;
+    }
+
+    .cancel-btn {
+      background: #999;
+    }
   </style>
 </head>
 <body>
@@ -281,6 +399,18 @@
     <div class="card">
       <h1>📊 PDF Availability Comparison Tool</h1>
       <p class="subtitle">Upload your inventory PDF to compare against database availability</p>
+
+      <!-- Auth Section -->
+      <div class="auth-section">
+        <div class="auth-status">
+          <div class="auth-indicator" id="authIndicator"></div>
+          <span id="authStatus">Not logged in</span>
+        </div>
+        <div class="auth-buttons">
+          <button class="auth-btn" id="loginBtn">Login</button>
+          <button class="auth-btn" id="logoutBtn" style="display: none;">Logout</button>
+        </div>
+      </div>
 
       <div class="error" id="errorDiv">
         <div class="error-title">Error</div>
@@ -334,6 +464,12 @@
           <div class="count">These lots should probably be marked as "Sold" in the database</div>
         </div>
         <div class="lot-list" id="soldList"></div>
+        <div class="section-actions" id="soldActions" style="display: none;">
+          <button class="update-btn danger" id="markSoldBtn" disabled>
+            Mark All as Sold (<span id="soldCount">0</span> lots)
+          </button>
+          <small style="color: #666;">This will update the database and mark these lots as "Sold"</small>
+        </div>
       </div>
 
       <div class="result-section" id="mismatchSection">
@@ -342,9 +478,31 @@
           <div class="count">These lots appear available in the PDF but are marked as sold in the database</div>
         </div>
         <div class="lot-list" id="mismatchList"></div>
+        <div class="section-actions" id="mismatchActions" style="display: none;">
+          <button class="update-btn" id="markAvailableBtn" disabled>
+            Mark All as Available (<span id="mismatchCount">0</span> lots)
+          </button>
+          <small style="color: #666;">This will update the database and mark these lots as "Available"</small>
+        </div>
       </div>
 
       <button onclick="location.reload()">Upload Another PDF</button>
+    </div>
+  </div>
+
+  <!-- Login Modal -->
+  <div id="loginModal">
+    <div class="login-card">
+      <h2>🔐 Login</h2>
+      <p style="color: #666; margin-bottom: 20px; font-size: 14px;">
+        Login required to update database records
+      </p>
+      <input type="email" id="loginEmail" placeholder="Email" />
+      <input type="password" id="loginPassword" placeholder="Password" />
+      <div class="login-actions">
+        <button class="cancel-btn" id="cancelLoginBtn">Cancel</button>
+        <button id="submitLoginBtn">Login</button>
+      </div>
     </div>
   </div>
 
@@ -357,6 +515,9 @@
 
     // Initialize Supabase
     let supabaseClient = null;
+    let currentUser = null;
+    let currentLikelySoldLots = [];
+    let currentMismatchLots = [];
 
     // Load Supabase config
     async function initSupabase() {
@@ -369,10 +530,170 @@
 
         supabaseClient = supabase.createClient(config.url, config.key);
         console.log('✅ Supabase initialized');
+
+        // Check for existing session
+        await checkAuth();
+
         return true;
       } catch (error) {
         console.error('❌ Failed to initialize Supabase:', error);
         showError('Failed to connect to database. Please check your internet connection.');
+        return false;
+      }
+    }
+
+    // Authentication Functions
+    async function checkAuth() {
+      try {
+        const { data: { session } } = await supabaseClient.auth.getSession();
+        if (session) {
+          currentUser = session.user;
+          updateAuthUI(true, session.user.email);
+        } else {
+          currentUser = null;
+          updateAuthUI(false);
+        }
+      } catch (error) {
+        console.error('Auth check error:', error);
+        currentUser = null;
+        updateAuthUI(false);
+      }
+    }
+
+    function updateAuthUI(isAuthenticated, email = '') {
+      const authIndicator = document.getElementById('authIndicator');
+      const authStatus = document.getElementById('authStatus');
+      const loginBtn = document.getElementById('loginBtn');
+      const logoutBtn = document.getElementById('logoutBtn');
+      const markSoldBtn = document.getElementById('markSoldBtn');
+      const markAvailableBtn = document.getElementById('markAvailableBtn');
+
+      if (isAuthenticated) {
+        authIndicator.classList.add('authenticated');
+        authStatus.textContent = `Logged in as ${email}`;
+        loginBtn.style.display = 'none';
+        logoutBtn.style.display = 'block';
+
+        // Enable update buttons if there are lots to update
+        if (currentLikelySoldLots.length > 0) {
+          markSoldBtn.disabled = false;
+        }
+        if (currentMismatchLots.length > 0) {
+          markAvailableBtn.disabled = false;
+        }
+      } else {
+        authIndicator.classList.remove('authenticated');
+        authStatus.textContent = 'Not logged in';
+        loginBtn.style.display = 'block';
+        logoutBtn.style.display = 'none';
+        markSoldBtn.disabled = true;
+        markAvailableBtn.disabled = true;
+      }
+    }
+
+    async function login(email, password) {
+      try {
+        const { data, error } = await supabaseClient.auth.signInWithPassword({
+          email,
+          password
+        });
+
+        if (error) throw error;
+
+        currentUser = data.user;
+        updateAuthUI(true, data.user.email);
+        document.getElementById('loginModal').classList.remove('active');
+        console.log('✅ Logged in successfully');
+
+        return true;
+      } catch (error) {
+        console.error('❌ Login error:', error);
+        showError(`Login failed: ${error.message}`);
+        return false;
+      }
+    }
+
+    async function logout() {
+      try {
+        await supabaseClient.auth.signOut();
+        currentUser = null;
+        updateAuthUI(false);
+        console.log('✅ Logged out successfully');
+      } catch (error) {
+        console.error('❌ Logout error:', error);
+        showError(`Logout failed: ${error.message}`);
+      }
+    }
+
+    // Bulk Update Functions
+    async function markLotsAsSold(lots) {
+      if (!currentUser) {
+        showError('You must be logged in to update lots');
+        return false;
+      }
+
+      if (!confirm(`Are you sure you want to mark ${lots.length} lots as SOLD?`)) {
+        return false;
+      }
+
+      try {
+        const lotNames = lots.map(lot => lot.lot_name);
+
+        console.log('Marking as sold:', lotNames);
+
+        const { data, error } = await supabaseClient
+          .from('lots')
+          .update({ availability: 'Sold' })
+          .in('lot_name', lotNames);
+
+        if (error) throw error;
+
+        alert(`✅ Successfully marked ${lots.length} lots as Sold!`);
+        console.log('✅ Update successful');
+
+        // Reload to show updated results
+        setTimeout(() => location.reload(), 1500);
+
+        return true;
+      } catch (error) {
+        console.error('❌ Update error:', error);
+        showError(`Failed to update lots: ${error.message}`);
+        return false;
+      }
+    }
+
+    async function markLotsAsAvailable(lots) {
+      if (!currentUser) {
+        showError('You must be logged in to update lots');
+        return false;
+      }
+
+      if (!confirm(`Are you sure you want to mark ${lots.length} lots as AVAILABLE?`)) {
+        return false;
+      }
+
+      try {
+        const lotNames = lots.map(lot => lot.lot_name);
+
+        console.log('Marking as available:', lotNames);
+
+        const { data, error } = await supabaseClient
+          .from('lots')
+          .update({ availability: 'Available' })
+          .in('lot_name', lotNames);
+
+        if (error) throw error;
+
+        alert(`✅ Successfully marked ${lots.length} lots as Available!`);
+        console.log('✅ Update successful');
+
+        // Reload to show updated results
+        setTimeout(() => location.reload(), 1500);
+
+        return true;
+      } catch (error) {
+        console.error('❌ Update error:', error);
+        showError(`Failed to update lots: ${error.message}`);
         return false;
       }
     }
@@ -392,6 +713,45 @@
 
     // Initialize on load
     initSupabase();
+
+    // Auth event listeners
+    document.getElementById('loginBtn').addEventListener('click', () => {
+      document.getElementById('loginModal').classList.add('active');
+    });
+
+    document.getElementById('logoutBtn').addEventListener('click', logout);
+
+    document.getElementById('cancelLoginBtn').addEventListener('click', () => {
+      document.getElementById('loginModal').classList.remove('active');
+    });
+
+    document.getElementById('submitLoginBtn').addEventListener('click', async () => {
+      const email = document.getElementById('loginEmail').value;
+      const password = document.getElementById('loginPassword').value;
+
+      if (!email || !password) {
+        showError('Please enter email and password');
+        return;
+      }
+
+      await login(email, password);
+    });
+
+    // Allow Enter key to submit login
+    document.getElementById('loginPassword').addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') {
+        document.getElementById('submitLoginBtn').click();
+      }
+    });
+
+    // Update button event listeners
+    document.getElementById('markSoldBtn').addEventListener('click', () => {
+      markLotsAsSold(currentLikelySoldLots);
+    });
+
+    document.getElementById('markAvailableBtn').addEventListener('click', () => {
+      markLotsAsAvailable(currentMismatchLots);
+    });
 
     // Upload area click
     uploadArea.addEventListener('click', () => {
@@ -699,6 +1059,30 @@
         });
       }
 
+      // Store lots for update functions
+      currentLikelySoldLots = allLikelySold;
+      currentMismatchLots = allMismatches;
+
+      // Update button counts and visibility
+      document.getElementById('soldCount').textContent = allLikelySold.length;
+      document.getElementById('mismatchCount').textContent = allMismatches.length;
+
+      const soldActions = document.getElementById('soldActions');
+      const mismatchActions = document.getElementById('mismatchActions');
+
+      if (allLikelySold.length > 0) {
+        soldActions.style.display = 'block';
+      }
+
+      if (allMismatches.length > 0) {
+        mismatchActions.style.display = 'block';
+      }
+
+      // Update auth UI to enable/disable buttons based on login status
+      if (currentUser) {
+        updateAuthUI(true, currentUser.email);
+      }
+
       // Show results
       results.classList.add('active');
     }
@@ -779,6 +1163,30 @@
           div.title = `In PDF but marked Sold in DB | DB: ${lot.lot_name} | Availability: ${lot.availability}`;
           mismatchList.appendChild(div);
         });
+      }
+
+      // Store lots for update functions
+      currentLikelySoldLots = likelySold;
+      currentMismatchLots = mismatches;
+
+      // Update button counts and visibility
+      document.getElementById('soldCount').textContent = likelySold.length;
+      document.getElementById('mismatchCount').textContent = mismatches.length;
+
+      const soldActions = document.getElementById('soldActions');
+      const mismatchActions = document.getElementById('mismatchActions');
+
+      if (likelySold.length > 0) {
+        soldActions.style.display = 'block';
+      }
+
+      if (mismatches.length > 0) {
+        mismatchActions.style.display = 'block';
+      }
+
+      // Update auth UI to enable/disable buttons based on login status
+      if (currentUser) {
+        updateAuthUI(true, currentUser.email);
       }
 
       // Show results
