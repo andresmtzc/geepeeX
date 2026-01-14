@@ -1117,28 +1117,49 @@
       return uniqueLots;
     }
 
-async function queryDatabase(fraccionamiento) {
-  if (!supabaseClient) {
-    throw new Error('Supabase not initialized');
-  }
+    async function queryDatabase(fraccionamiento) {
+      if (!supabaseClient) {
+        throw new Error('Supabase not initialized');
+      }
 
-  const { data, error } = await supabaseClient
-    .from('lots')
-    .select('lot_name, availability, fraccionamiento, client_id')
-    .eq('client_id', CURRENT_CLIENT)  // ⬅️ ADD THIS LINE
-    .ilike('fraccionamiento', fraccionamiento);
+      let allData = [];
+      let currentPage = 0;
+      const pageSize = 1000;
+      let hasMore = true;
 
-  if (error) {
-    throw new Error(`Database query failed: ${error.message}`);
-  }
+      console.log('💾 Fetching all lots for fraccionamiento "' + fraccionamiento + '"...');
 
-  console.log('💾 Raw DB results for fraccionamiento "' + fraccionamiento + '":', data.length);
-  if (data && data.length > 0) {
-    console.log('💾 Sample DB records:', data.slice(0, 3));
-  }
+      // Paginate through all results
+      while (hasMore) {
+        const { data, error } = await supabaseClient
+          .from('lots')
+          .select('lot_name, availability, fraccionamiento, client_id')
+          .eq('client_id', CURRENT_CLIENT)
+          .ilike('fraccionamiento', fraccionamiento)
+          .range(currentPage * pageSize, (currentPage + 1) * pageSize - 1);
 
-  return data || [];
-}
+        if (error) {
+          throw new Error(`Database query failed: ${error.message}`);
+        }
+
+        if (data && data.length > 0) {
+          allData.push(...data);
+          console.log(`💾 Fetched page ${currentPage + 1}: ${data.length} lots (total so far: ${allData.length})`);
+        }
+
+        // If we got less than pageSize, we've reached the end
+        hasMore = data && data.length === pageSize;
+        currentPage++;
+      }
+
+      console.log('💾 Total lots fetched for fraccionamiento "' + fraccionamiento + '":', allData.length);
+      if (allData.length > 0) {
+        console.log('💾 Sample DB records:', allData.slice(0, 3));
+        console.log('💾 Unique fraccionamientos in results:', [...new Set(allData.map(d => d.fraccionamiento))]);
+      }
+
+      return allData;
+    }
 
     function compareAndDisplayMultiple(allResults) {
       // Combine all results from multiple PDFs
@@ -1158,13 +1179,17 @@ async function queryDatabase(fraccionamiento) {
 
         dbLots.forEach(lot => {
           // Extract manzana-lote from lot_name (e.g., "lotinverta24-09" -> "24-09")
-          const match = lot.lot_name.match(/lotinverta[p]?(\d+-\d+)/i);
+          const match = lot.lot_name.match(/lotinverta[p]?(\d+)-(\d+)/i);
           if (match) {
-            const formatted = match[1];
+            // Normalize to 2-digit format for matching (pad with zeros)
+            const manzana = match[1].padStart(2, '0');
+            const lote = match[2].padStart(2, '0');
+            const formatted = `${manzana}-${lote}`;  // e.g., "04-50"
+
             const lotInfo = {
               ...lot,
               formatted: formatted,
-              displayName: `${lot.fraccionamiento} ${formatted}` // e.g., "MARSELLA 10-29"
+              displayName: `${lot.fraccionamiento} ${formatted}` // e.g., "MARSELLA 04-50"
             };
 
             if (lot.availability && lot.availability.toLowerCase() === 'sold') {
@@ -1270,13 +1295,17 @@ async function queryDatabase(fraccionamiento) {
 
       dbLots.forEach(lot => {
         // Extract manzana-lote from lot_name (e.g., "lotinverta24-09" -> "24-09")
-        const match = lot.lot_name.match(/lotinverta[p]?(\d+-\d+)/i);
+        const match = lot.lot_name.match(/lotinverta[p]?(\d+)-(\d+)/i);
         if (match) {
-          const formatted = match[1];
+          // Normalize to 2-digit format for matching (pad with zeros)
+          const manzana = match[1].padStart(2, '0');
+          const lote = match[2].padStart(2, '0');
+          const formatted = `${manzana}-${lote}`;  // e.g., "04-50"
+
           const lotInfo = {
             ...lot,
             formatted: formatted,
-            displayName: `${lot.fraccionamiento} ${formatted}` // e.g., "MARSELLA 10-29"
+            displayName: `${lot.fraccionamiento} ${formatted}` // e.g., "MARSELLA 04-50"
           };
 
           if (lot.availability && lot.availability.toLowerCase() === 'sold') {
