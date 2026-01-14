@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PDF Availability Comparison Tool</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      padding: 20px;
+      color: #333;
+    }
+
+    .container {
+      max-width: 1000px;
+      margin: 0 auto;
+    }
+
+    .card {
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+      padding: 40px;
+      margin-bottom: 20px;
+    }
+
+    h1 {
+      color: #667eea;
+      margin-bottom: 10px;
+      font-size: 28px;
+    }
+
+    .subtitle {
+      color: #666;
+      margin-bottom: 30px;
+      font-size: 14px;
+    }
+
+    .upload-area {
+      border: 3px dashed #667eea;
+      border-radius: 8px;
+      padding: 40px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      background: #f8f9ff;
+    }
+
+    .upload-area:hover {
+      border-color: #764ba2;
+      background: #f0f2ff;
+    }
+
+    .upload-area.dragover {
+      border-color: #764ba2;
+      background: #e8ebff;
+      transform: scale(1.02);
+    }
+
+    #fileInput {
+      display: none;
+    }
+
+    .upload-icon {
+      font-size: 48px;
+      margin-bottom: 10px;
+      color: #667eea;
+    }
+
+    .upload-text {
+      font-size: 18px;
+      color: #667eea;
+      font-weight: 600;
+      margin-bottom: 5px;
+    }
+
+    .upload-hint {
+      font-size: 13px;
+      color: #999;
+    }
+
+    .selected-file {
+      margin-top: 20px;
+      padding: 15px;
+      background: #e8f5e9;
+      border-left: 4px solid #4caf50;
+      border-radius: 4px;
+    }
+
+    .selected-file strong {
+      color: #2e7d32;
+    }
+
+    .loading {
+      text-align: center;
+      padding: 30px;
+      display: none;
+    }
+
+    .loading.active {
+      display: block;
+    }
+
+    .spinner {
+      border: 4px solid #f3f3f3;
+      border-top: 4px solid #667eea;
+      border-radius: 50%;
+      width: 40px;
+      height: 40px;
+      animation: spin 1s linear infinite;
+      margin: 0 auto 15px;
+    }
+
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    .results {
+      display: none;
+    }
+
+    .results.active {
+      display: block;
+    }
+
+    .result-section {
+      margin-bottom: 30px;
+    }
+
+    .result-header {
+      background: #f8f9ff;
+      padding: 15px;
+      border-left: 4px solid #667eea;
+      margin-bottom: 15px;
+      border-radius: 4px;
+    }
+
+    .result-header h2 {
+      font-size: 18px;
+      color: #667eea;
+      margin-bottom: 5px;
+    }
+
+    .result-header .count {
+      font-size: 14px;
+      color: #666;
+    }
+
+    .lot-list {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+
+    .lot-item {
+      padding: 12px;
+      background: #f5f5f5;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 500;
+      transition: all 0.2s ease;
+    }
+
+    .lot-item:hover {
+      background: #eeeeee;
+      transform: translateY(-2px);
+    }
+
+    .lot-item.sold {
+      background: #ffebee;
+      border-left: 3px solid #f44336;
+    }
+
+    .lot-item.mismatch {
+      background: #fff3e0;
+      border-left: 3px solid #ff9800;
+    }
+
+    .lot-item.mismatch::before {
+      content: '⚠️ ';
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 15px;
+      margin-bottom: 30px;
+    }
+
+    .stat-card {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      padding: 20px;
+      border-radius: 8px;
+      text-align: center;
+    }
+
+    .stat-number {
+      font-size: 36px;
+      font-weight: bold;
+      margin-bottom: 5px;
+    }
+
+    .stat-label {
+      font-size: 13px;
+      opacity: 0.9;
+    }
+
+    .error {
+      background: #ffebee;
+      border-left: 4px solid #f44336;
+      padding: 15px;
+      border-radius: 4px;
+      margin-bottom: 20px;
+      display: none;
+    }
+
+    .error.active {
+      display: block;
+    }
+
+    .error-title {
+      color: #c62828;
+      font-weight: 600;
+      margin-bottom: 5px;
+    }
+
+    .error-message {
+      color: #666;
+      font-size: 14px;
+    }
+
+    button {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      border: none;
+      padding: 12px 30px;
+      border-radius: 6px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.2s ease;
+      margin-top: 20px;
+    }
+
+    button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 5px 15px rgba(102, 126, 234, 0.3);
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 40px;
+      color: #999;
+    }
+
+    .empty-state-icon {
+      font-size: 64px;
+      margin-bottom: 15px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="card">
+      <h1>📊 PDF Availability Comparison Tool</h1>
+      <p class="subtitle">Upload your inventory PDF to compare against database availability</p>
+
+      <div class="error" id="errorDiv">
+        <div class="error-title">Error</div>
+        <div class="error-message" id="errorMessage"></div>
+      </div>
+
+      <div class="upload-area" id="uploadArea">
+        <div class="upload-icon">📄</div>
+        <div class="upload-text">Click or drag PDF here</div>
+        <div class="upload-hint">Supported format: PDF files with inventory data</div>
+        <input type="file" id="fileInput" accept=".pdf">
+      </div>
+
+      <div class="selected-file" id="selectedFile" style="display: none;">
+        <strong>Selected:</strong> <span id="fileName"></span>
+      </div>
+
+      <button id="compareBtn" style="display: none;">Compare with Database</button>
+
+      <div class="loading" id="loading">
+        <div class="spinner"></div>
+        <div>Processing PDF and comparing with database...</div>
+      </div>
+    </div>
+
+    <div class="card results" id="results">
+      <h2 style="margin-bottom: 20px;">📈 Comparison Results</h2>
+
+      <div class="stats">
+        <div class="stat-card">
+          <div class="stat-number" id="statPdfLots">0</div>
+          <div class="stat-label">Lots in PDF (Available)</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-number" id="statDbLots">0</div>
+          <div class="stat-label">Lots in DB (Available)</div>
+        </div>
+        <div class="stat-card" style="background: linear-gradient(135deg, #f44336 0%, #e91e63 100%);">
+          <div class="stat-number" id="statSold">0</div>
+          <div class="stat-label">Likely Sold (In DB, Not in PDF)</div>
+        </div>
+        <div class="stat-card" style="background: linear-gradient(135deg, #ff9800 0%, #ff5722 100%);">
+          <div class="stat-number" id="statMismatch">0</div>
+          <div class="stat-label">Mismatches (In PDF, Sold in DB)</div>
+        </div>
+      </div>
+
+      <div class="result-section" id="soldSection">
+        <div class="result-header">
+          <h2>🔴 Lots Marked Available in DB but NOT in PDF (Likely Sold)</h2>
+          <div class="count">These lots should probably be marked as "Sold" in the database</div>
+        </div>
+        <div class="lot-list" id="soldList"></div>
+      </div>
+
+      <div class="result-section" id="mismatchSection">
+        <div class="result-header">
+          <h2>⚠️ Lots in PDF but Marked Sold in DB (Mismatches)</h2>
+          <div class="count">These lots appear available in the PDF but are marked as sold in the database</div>
+        </div>
+        <div class="lot-list" id="mismatchList"></div>
+      </div>
+
+      <button onclick="location.reload()">Upload Another PDF</button>
+    </div>
+  </div>
+
+  <!-- Load dependencies -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script>
+    // Set PDF.js worker
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+    // Initialize Supabase
+    let supabaseClient = null;
+
+    // Load Supabase config
+    async function initSupabase() {
+      try {
+        const response = await fetch('https://la-la.land/sb_config.json');
+        if (!response.ok) {
+          throw new Error('Failed to load Supabase config');
+        }
+        const config = await response.json();
+
+        supabaseClient = supabase.createClient(config.url, config.key);
+        console.log('✅ Supabase initialized');
+        return true;
+      } catch (error) {
+        console.error('❌ Failed to initialize Supabase:', error);
+        showError('Failed to connect to database. Please check your internet connection.');
+        return false;
+      }
+    }
+
+    // Elements
+    const uploadArea = document.getElementById('uploadArea');
+    const fileInput = document.getElementById('fileInput');
+    const selectedFileDiv = document.getElementById('selectedFile');
+    const fileNameSpan = document.getElementById('fileName');
+    const compareBtn = document.getElementById('compareBtn');
+    const loading = document.getElementById('loading');
+    const results = document.getElementById('results');
+    const errorDiv = document.getElementById('errorDiv');
+    const errorMessage = document.getElementById('errorMessage');
+
+    let selectedFile = null;
+
+    // Initialize on load
+    initSupabase();
+
+    // Upload area click
+    uploadArea.addEventListener('click', () => {
+      fileInput.click();
+    });
+
+    // File selection
+    fileInput.addEventListener('change', (e) => {
+      handleFileSelect(e.target.files[0]);
+    });
+
+    // Drag and drop
+    uploadArea.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      uploadArea.classList.add('dragover');
+    });
+
+    uploadArea.addEventListener('dragleave', () => {
+      uploadArea.classList.remove('dragover');
+    });
+
+    uploadArea.addEventListener('drop', (e) => {
+      e.preventDefault();
+      uploadArea.classList.remove('dragover');
+      handleFileSelect(e.dataTransfer.files[0]);
+    });
+
+    function handleFileSelect(file) {
+      if (!file) return;
+
+      if (!file.name.toLowerCase().endsWith('.pdf')) {
+        showError('Please select a PDF file');
+        return;
+      }
+
+      selectedFile = file;
+      fileNameSpan.textContent = file.name;
+      selectedFileDiv.style.display = 'block';
+      compareBtn.style.display = 'block';
+      hideError();
+    }
+
+    // Compare button
+    compareBtn.addEventListener('click', async () => {
+      if (!selectedFile) return;
+
+      compareBtn.disabled = true;
+      loading.classList.add('active');
+      results.classList.remove('active');
+      hideError();
+
+      try {
+        await processAndCompare(selectedFile);
+      } catch (error) {
+        console.error('Error processing:', error);
+        showError(error.message || 'An error occurred while processing the PDF');
+      } finally {
+        compareBtn.disabled = false;
+        loading.classList.remove('active');
+      }
+    });
+
+    async function processAndCompare(file) {
+      // Step 1: Extract fraccionamiento from filename
+      const fraccionamiento = extractFraccionamiento(file.name);
+      if (!fraccionamiento) {
+        throw new Error('Could not extract fraccionamiento from filename. Expected format: "PROJECT_FRACCIONAMIENTO DATE.pdf"');
+      }
+      console.log('📍 Fraccionamiento:', fraccionamiento);
+
+      // Step 2: Parse PDF to extract lot numbers
+      const pdfLots = await parsePDF(file);
+      if (pdfLots.length === 0) {
+        throw new Error('No lots found in PDF. Make sure the PDF contains lot data in format MZ##L##');
+      }
+      console.log('📄 Lots found in PDF:', pdfLots.length, pdfLots);
+
+      // Step 3: Query database for lots in this fraccionamiento
+      const dbLots = await queryDatabase(fraccionamiento);
+      console.log('💾 Lots found in DB:', dbLots.length);
+
+      // Step 4: Compare and generate results
+      compareAndDisplay(pdfLots, dbLots, fraccionamiento);
+    }
+
+    function extractFraccionamiento(filename) {
+      // Format: "LOMAS MEDITERRANEO C_MARSELLA 14ENE2026.pdf"
+      // We want to extract "MARSELLA" (between underscore and date/space)
+
+      const match = filename.match(/_([A-Z]+)\s/i);
+      if (match) {
+        return match[1].toUpperCase();
+      }
+
+      // Try alternative pattern without space before date
+      const match2 = filename.match(/_([A-Z]+)/i);
+      if (match2) {
+        return match2[1].toUpperCase();
+      }
+
+      return null;
+    }
+
+    async function parsePDF(file) {
+      const arrayBuffer = await file.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+
+      let allText = '';
+
+      // Extract text from all pages
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const textContent = await page.getTextContent();
+        const pageText = textContent.items.map(item => item.str).join(' ');
+        allText += pageText + ' ';
+      }
+
+      console.log('📝 Extracted PDF text length:', allText.length);
+
+      // Find all lot numbers in format MZ##L##
+      const lotPattern = /MZ(\d+)L(\d+)/gi;
+      const matches = [...allText.matchAll(lotPattern)];
+
+      const lots = matches.map(match => {
+        const manzana = match[1].padStart(2, '0');
+        const lote = match[2].padStart(2, '0');
+        return {
+          original: match[0],
+          manzana: parseInt(match[1]),
+          lote: parseInt(match[2]),
+          formatted: `${manzana}-${lote}` // Format: "24-09"
+        };
+      });
+
+      // Remove duplicates
+      const uniqueLots = Array.from(new Map(lots.map(lot => [lot.formatted, lot])).values());
+
+      return uniqueLots;
+    }
+
+    async function queryDatabase(fraccionamiento) {
+      if (!supabaseClient) {
+        throw new Error('Supabase not initialized');
+      }
+
+      // Query lots table filtering by fraccionamiento
+      // We get lot_name, availability, and fraccionamiento columns
+      const { data, error } = await supabaseClient
+        .from('lots')
+        .select('lot_name, availability, fraccionamiento')
+        .ilike('fraccionamiento', fraccionamiento); // Case-insensitive match
+
+      if (error) {
+        throw new Error(`Database query failed: ${error.message}`);
+      }
+
+      console.log('💾 Raw DB results:', data.length, data.slice(0, 5));
+
+      return data || [];
+    }
+
+    function compareAndDisplay(pdfLots, dbLots, fraccionamiento) {
+      // Convert PDF lots to database format (lotinverta##-## or lotinvertap##-##)
+      const pdfLotSet = new Set(pdfLots.map(lot => lot.formatted));
+
+      // Separate DB lots into Available and Sold
+      const dbAvailableLots = [];
+      const dbSoldLots = [];
+
+      dbLots.forEach(lot => {
+        // Extract manzana-lote from lot_name (e.g., "lotinverta24-09" -> "24-09")
+        const match = lot.lot_name.match(/lotinverta[p]?(\d+-\d+)/i);
+        if (match) {
+          const formatted = match[1];
+          const lotInfo = {
+            ...lot,
+            formatted: formatted
+          };
+
+          if (lot.availability && lot.availability.toLowerCase() === 'sold') {
+            dbSoldLots.push(lotInfo);
+          } else {
+            dbAvailableLots.push(lotInfo);
+          }
+        }
+      });
+
+      console.log('🔍 Comparison:');
+      console.log('  PDF lots:', Array.from(pdfLotSet));
+      console.log('  DB Available lots:', dbAvailableLots.map(l => l.formatted));
+      console.log('  DB Sold lots:', dbSoldLots.map(l => l.formatted));
+
+      // Find lots that are Available in DB but NOT in PDF (likely sold)
+      const likelySold = dbAvailableLots.filter(lot => !pdfLotSet.has(lot.formatted));
+
+      // Find lots that are in PDF but marked Sold in DB (mismatches - edge case)
+      const mismatches = dbSoldLots.filter(lot => pdfLotSet.has(lot.formatted));
+
+      console.log('📊 Results:');
+      console.log('  Likely sold:', likelySold.length, likelySold.map(l => l.formatted));
+      console.log('  Mismatches:', mismatches.length, mismatches.map(l => l.formatted));
+
+      // Update stats
+      document.getElementById('statPdfLots').textContent = pdfLots.length;
+      document.getElementById('statDbLots').textContent = dbAvailableLots.length;
+      document.getElementById('statSold').textContent = likelySold.length;
+      document.getElementById('statMismatch').textContent = mismatches.length;
+
+      // Display sold lots
+      const soldList = document.getElementById('soldList');
+      soldList.innerHTML = '';
+      if (likelySold.length === 0) {
+        soldList.innerHTML = '<div class="empty-state"><div class="empty-state-icon">✅</div><div>No discrepancies found! All available lots in DB match the PDF.</div></div>';
+      } else {
+        likelySold.forEach(lot => {
+          const div = document.createElement('div');
+          div.className = 'lot-item sold';
+          div.textContent = lot.lot_name;
+          soldList.appendChild(div);
+        });
+      }
+
+      // Display mismatches
+      const mismatchList = document.getElementById('mismatchList');
+      mismatchList.innerHTML = '';
+      if (mismatches.length === 0) {
+        mismatchList.innerHTML = '<div class="empty-state"><div class="empty-state-icon">✅</div><div>No mismatches found.</div></div>';
+      } else {
+        mismatches.forEach(lot => {
+          const div = document.createElement('div');
+          div.className = 'lot-item mismatch';
+          div.textContent = lot.lot_name;
+          div.title = 'In PDF but marked Sold in DB';
+          mismatchList.appendChild(div);
+        });
+      }
+
+      // Show results
+      results.classList.add('active');
+    }
+
+    function showError(message) {
+      errorMessage.textContent = message;
+      errorDiv.classList.add('active');
+    }
+
+    function hideError() {
+      errorDiv.classList.remove('active');
+    }
+  </script>
+</body>
+</html>
