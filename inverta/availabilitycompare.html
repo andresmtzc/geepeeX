@@ -1122,24 +1122,43 @@
         throw new Error('Supabase not initialized');
       }
 
-      // Query lots table filtering by fraccionamiento
-      // We get lot_name, availability, and fraccionamiento columns
-      const { data, error } = await supabaseClient
-        .from('lots')
-        .select('lot_name, availability, fraccionamiento')
-        .ilike('fraccionamiento', fraccionamiento); // Case-insensitive match
+      let allData = [];
+      let currentPage = 0;
+      const pageSize = 1000;
+      let hasMore = true;
 
-      if (error) {
-        throw new Error(`Database query failed: ${error.message}`);
+      console.log('💾 Fetching all lots for fraccionamiento "' + fraccionamiento + '"...');
+
+      // Paginate through all results
+      while (hasMore) {
+        const { data, error } = await supabaseClient
+          .from('lots')
+          .select('lot_name, availability, fraccionamiento, client_id')
+          .eq('client_id', CURRENT_CLIENT)
+          .ilike('fraccionamiento', fraccionamiento)
+          .range(currentPage * pageSize, (currentPage + 1) * pageSize - 1);
+
+        if (error) {
+          throw new Error(`Database query failed: ${error.message}`);
+        }
+
+        if (data && data.length > 0) {
+          allData.push(...data);
+          console.log(`💾 Fetched page ${currentPage + 1}: ${data.length} lots (total so far: ${allData.length})`);
+        }
+
+        // If we got less than pageSize, we've reached the end
+        hasMore = data && data.length === pageSize;
+        currentPage++;
       }
 
-      console.log('💾 Raw DB results for fraccionamiento "' + fraccionamiento + '":', data.length);
-      if (data && data.length > 0) {
-        console.log('💾 Sample DB records:', data.slice(0, 3));
-        console.log('💾 Unique fraccionamientos in results:', [...new Set(data.map(d => d.fraccionamiento))]);
+      console.log('💾 Total lots fetched for fraccionamiento "' + fraccionamiento + '":', allData.length);
+      if (allData.length > 0) {
+        console.log('💾 Sample DB records:', allData.slice(0, 3));
+        console.log('💾 Unique fraccionamientos in results:', [...new Set(allData.map(d => d.fraccionamiento))]);
       }
 
-      return data || [];
+      return allData;
     }
 
     function compareAndDisplayMultiple(allResults) {
