@@ -786,7 +786,7 @@ async function testSingleImage() {
   // Pick a random unanalyzed image, or first image if all analyzed
   const unanalyzed = images.filter(img => !analysisResults[img]?.analyzed);
   const testImage = unanalyzed.length > 0
-    ? unanalyzed[Math.floor(Math.random() * Math.min(10, unanalyzed.length))] // Random from first 10
+    ? unanalyzed[Math.floor(Math.random() * unanalyzed.length)]
     : images[0];
 
   const imageUrl = CONFIG.framesBase + testImage;
