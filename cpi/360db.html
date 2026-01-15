@@ -488,6 +488,7 @@
         <input type="password" class="api-key-input" id="apiKey" placeholder="OpenAI API Key (sk-...)" oninput="checkApiKey()">
       </div>
       <button class="btn btn-secondary" onclick="exportData()" id="exportBtn" disabled>Export JSON</button>
+      <button class="btn btn-primary" onclick="testSingleImage()" id="testBtn" disabled>Test 1 Image</button>
       <button class="btn btn-success" onclick="startAnalysis()" id="analyzeBtn" disabled>
         <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
           <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
@@ -657,17 +658,81 @@ async function loadImages() {
 function checkApiKey() {
   const apiKey = document.getElementById('apiKey').value;
   const analyzeBtn = document.getElementById('analyzeBtn');
+  const testBtn = document.getElementById('testBtn');
   const statusBadge = document.getElementById('statusBadge');
 
   if (apiKey && apiKey.startsWith('sk-')) {
     analyzeBtn.disabled = false;
+    testBtn.disabled = false;
     statusBadge.textContent = 'Ready';
     statusBadge.className = 'status-badge ready';
   } else {
     analyzeBtn.disabled = true;
+    testBtn.disabled = true;
     statusBadge.textContent = 'Waiting for API Key';
     statusBadge.className = 'status-badge idle';
   }
+}
+
+// ============================================
+// TEST SINGLE IMAGE
+// ============================================
+async function testSingleImage() {
+  const apiKey = document.getElementById('apiKey').value;
+  if (!apiKey) return;
+
+  // Pick a random unanalyzed image, or first image if all analyzed
+  const unanalyzed = images.filter(img => !analysisResults[img]?.analyzed);
+  const testImage = unanalyzed.length > 0
+    ? unanalyzed[Math.floor(Math.random() * Math.min(10, unanalyzed.length))] // Random from first 10
+    : images[0];
+
+  const imageUrl = CONFIG.framesBase + testImage;
+
+  // Show log panel and update status
+  document.getElementById('logPanel').style.display = 'block';
+  document.getElementById('statusBadge').textContent = 'Testing...';
+  document.getElementById('statusBadge').className = 'status-badge analyzing';
+  document.getElementById('testBtn').disabled = true;
+
+  log(`Testing with: ${testImage}`, 'info');
+
+  try {
+    const result = await analyzeImage(imageUrl, apiKey);
+
+    analysisResults[testImage] = {
+      features: result.features || [],
+      description: result.overall_description || '',
+      analyzed: true,
+      timestamp: Date.now()
+    };
+
+    const featureCount = result.features?.length || 0;
+    log(`SUCCESS: Found ${featureCount} features`, 'success');
+
+    // Log each feature found
+    (result.features || []).forEach(f => {
+      log(`  - ${f.feature} (${f.category}): ${f.description || 'no description'}`, 'info');
+    });
+
+    if (result.overall_description) {
+      log(`Summary: ${result.overall_description}`, 'info');
+    }
+
+    saveToLocalStorage();
+    updateStats();
+    renderResults();
+
+    // Open the viewer to show the result
+    openViewer(testImage);
+
+  } catch (error) {
+    log(`FAILED: ${error.message}`, 'error');
+  }
+
+  document.getElementById('statusBadge').textContent = 'Ready';
+  document.getElementById('statusBadge').className = 'status-badge ready';
+  document.getElementById('testBtn').disabled = false;
 }
 
 // ============================================
