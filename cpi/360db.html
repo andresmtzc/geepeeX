@@ -553,6 +553,8 @@
       <div class="api-key-group">
         <input type="password" class="api-key-input" id="apiKey" placeholder="OpenAI API Key (sk-...)" oninput="checkApiKey()">
       </div>
+      <button class="btn btn-secondary" onclick="document.getElementById('importFile').click()">Import JSON</button>
+      <input type="file" id="importFile" accept=".json" style="display: none;" onchange="importData(event)">
       <button class="btn btn-secondary" onclick="exportData()" id="exportBtn" disabled>Export JSON</button>
       <button class="btn btn-primary" onclick="testSingleImage()" id="testBtn" disabled>Test 1 Image</button>
       <button class="btn btn-success" onclick="startAnalysis()" id="analyzeBtn" disabled>
@@ -1276,6 +1278,52 @@ function log(message, type = 'info') {
 // ============================================
 // DATA MANAGEMENT
 // ============================================
+function importData(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      const data = JSON.parse(e.target.result);
+
+      // Handle both old format (direct tags) and new format (images object)
+      const imported = data.images || data.tags || data;
+
+      let count = 0;
+      Object.keys(imported).forEach(imageName => {
+        const entry = imported[imageName];
+        // Skip if not a valid entry
+        if (!entry || typeof entry !== 'object') return;
+
+        analysisResults[imageName] = {
+          features: entry.features || [],
+          description: entry.description || entry.overall_description || '',
+          analyzed: true,
+          timestamp: entry.timestamp || Date.now()
+        };
+        count++;
+      });
+
+      saveToLocalStorage();
+      updateStats();
+      renderResults();
+
+      log(`Imported ${count} analyzed images`, 'success');
+      alert(`Successfully imported ${count} images with features!`);
+
+      // Reset file input
+      event.target.value = '';
+
+    } catch (error) {
+      log(`Import failed: ${error.message}`, 'error');
+      alert('Failed to import: ' + error.message);
+    }
+  };
+
+  reader.readAsText(file);
+}
+
 function exportData() {
   const data = {
     version: '1.0',
