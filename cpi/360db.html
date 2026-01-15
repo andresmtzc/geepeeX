@@ -636,10 +636,11 @@
       <div class="results-header">
         <h2>Results (<span id="resultCount">0</span>)</h2>
         <div class="filter-buttons">
-          <button class="filter-btn active" onclick="filterResults('all')">All</button>
-          <button class="filter-btn" onclick="filterResults('nature')">Nature</button>
-          <button class="filter-btn" onclick="filterResults('infrastructure')">Infrastructure</button>
-          <button class="filter-btn" onclick="filterResults('condition')">Conditions</button>
+          <button class="filter-btn active" data-filter="all" onclick="filterResults('all')">All</button>
+          <button class="filter-btn" data-filter="available" onclick="filterResults('available')" style="border-color: var(--success);">Available</button>
+          <button class="filter-btn" data-filter="sold" onclick="filterResults('sold')" style="border-color: var(--error);">Sold</button>
+          <button class="filter-btn" data-filter="nature" onclick="filterResults('nature')">Nature</button>
+          <button class="filter-btn" data-filter="infrastructure" onclick="filterResults('infrastructure')">Infra</button>
         </div>
       </div>
 
@@ -689,9 +690,40 @@ const CONFIG = {
 // ============================================
 let images = [];
 let analysisResults = {}; // { imageName: { features: [], description: '', analyzed: true } }
+let soldLots = new Set(); // Track sold lots
 let isAnalyzing = false;
 let isPaused = false;
 let currentAnalysisIndex = 0;
+
+// ============================================
+// SCORING WEIGHTS - Tune these for your client!
+// ============================================
+const FEATURE_SCORES = {
+  // Nature/Views - HIGH VALUE (people buy for these)
+  mountain_view: 25,
+  open_sky: 20,
+  trees: 15,
+  water: 30,        // Premium if present
+  vegetation: 10,
+  rocks: 5,
+
+  // Infrastructure - EXPECTED (good to have, not a selling point)
+  road_paved: 8,
+  road_dirt: 3,
+  fence: 5,
+  power_lines: 5,
+  gate: 3,
+  signage: 2,
+  street_lights: 4,
+
+  // Lot Conditions - CONTEXT DEPENDENT
+  flat_terrain: 12,
+  sloped_terrain: -5,   // Harder to build
+  shade_area: 15,
+  neighboring_lot: -8,  // Less privacy
+  construction: -10,    // Noisy/dusty
+  cleared_land: 8
+};
 
 // Three.js for modal viewer
 let modalScene, modalCamera, modalRenderer, modalSphere;
@@ -1031,9 +1063,9 @@ function updateStats() {
 
 function renderResults(filter = 'all') {
   const container = document.getElementById('resultsGrid');
-  const analyzed = Object.entries(analysisResults).filter(([_, r]) => r.analyzed);
+  const ranked = getRankedResults();
 
-  if (analyzed.length === 0) {
+  if (ranked.length === 0) {
     container.innerHTML = `
       <div class="empty-state">
         <svg viewBox="0 0 24 24" fill="currentColor">
@@ -1046,33 +1078,70 @@ function renderResults(filter = 'all') {
     return;
   }
 
-  // Filter results
-  let filtered = analyzed;
-  if (filter !== 'all') {
-    filtered = analyzed.filter(([_, r]) =>
-      r.features.some(f => f.category === filter)
+  // Filter by category or sold status
+  let filtered = ranked;
+  if (filter === 'available') {
+    filtered = ranked.filter(r => !r.isSold);
+  } else if (filter === 'sold') {
+    filtered = ranked.filter(r => r.isSold);
+  } else if (filter !== 'all') {
+    filtered = ranked.filter(r =>
+      r.result.features.some(f => f.category === filter)
     );
   }
 
-  container.innerHTML = filtered.map(([imageName, result]) => {
-    const features = filter === 'all'
-      ? result.features
-      : result.features.filter(f => f.category === filter);
+  // Show top recommendation banner
+  const top = getTopRecommendation();
+  let bannerHtml = '';
+  if (top && filter !== 'sold') {
+    bannerHtml = `
+      <div style="grid-column: 1 / -1; background: linear-gradient(135deg, var(--accent), var(--success)); padding: 20px; border-radius: 12px; margin-bottom: 10px; display: flex; align-items: center; gap: 20px;">
+        <div style="font-size: 2rem;">🏆</div>
+        <div style="flex: 1;">
+          <div style="font-size: 0.85rem; opacity: 0.9; margin-bottom: 4px;">TOP RECOMMENDATION</div>
+          <div style="font-size: 1.2rem; font-weight: 700;">${top.imageName}</div>
+          <div style="font-size: 0.9rem; opacity: 0.9;">Score: ${top.score} pts • ${getScoreLabel(top.score)}</div>
+        </div>
+        <button onclick="openViewer('${top.imageName}')" style="background: white; color: var(--accent); border: none; padding: 10px 20px; border-radius: 8px; font-weight: 600; cursor: pointer;">View</button>
+      </div>
+    `;
+  }
+
+  container.innerHTML = bannerHtml + filtered.map(({ imageName, result, score, isSold }, index) => {
+    const features = result.features;
+    const rank = index + 1;
+    const scoreColor = getScoreColor(score);
 
     return `
-      <div class="result-card">
-        <img class="result-image" src="${CONFIG.framesBase}${imageName}"
-             onclick="openViewer('${imageName}')"
-             loading="lazy">
+      <div class="result-card" style="${isSold ? 'opacity: 0.5;' : ''}">
+        <div style="position: relative;">
+          <img class="result-image" src="${CONFIG.framesBase}${imageName}"
+               onclick="openViewer('${imageName}')"
+               loading="lazy"
+               style="${isSold ? 'filter: grayscale(100%);' : ''}">
+          <div style="position: absolute; top: 10px; left: 10px; background: ${scoreColor}; color: white; padding: 4px 10px; border-radius: 12px; font-size: 0.8rem; font-weight: 700;">
+            #${rank} • ${score} pts
+          </div>
+          ${isSold ? `<div style="position: absolute; top: 10px; right: 10px; background: var(--error); color: white; padding: 4px 10px; border-radius: 12px; font-size: 0.75rem; font-weight: 600;">SOLD</div>` : ''}
+        </div>
         <div class="result-content">
-          <div class="result-name">${imageName}</div>
+          <div class="result-name" style="display: flex; justify-content: space-between; align-items: center;">
+            <span>${imageName}</span>
+            <span style="font-size: 0.75rem; color: ${scoreColor}; font-weight: 600;">${getScoreLabel(score)}</span>
+          </div>
           <div class="result-tags">
-            ${features.slice(0, 6).map(f => `
+            ${features.slice(0, 5).map(f => `
               <span class="tag ${f.category}">${formatFeature(f.feature)}</span>
             `).join('')}
-            ${features.length > 6 ? `<span class="tag" style="background: var(--bg-hover);">+${features.length - 6}</span>` : ''}
+            ${features.length > 5 ? `<span class="tag" style="background: var(--bg-hover);">+${features.length - 5}</span>` : ''}
           </div>
-          ${result.description ? `<div class="result-description">${result.description.slice(0, 100)}...</div>` : ''}
+          <div style="margin-top: 10px; display: flex; gap: 8px;">
+            ${isSold
+              ? `<button onclick="event.stopPropagation(); unmarkSold('${imageName}')" style="flex: 1; padding: 6px; background: var(--bg-hover); border: none; border-radius: 6px; color: var(--text-primary); cursor: pointer; font-size: 0.8rem;">Unmark Sold</button>`
+              : `<button onclick="event.stopPropagation(); markAsSold('${imageName}')" style="flex: 1; padding: 6px; background: var(--error); border: none; border-radius: 6px; color: white; cursor: pointer; font-size: 0.8rem;">Mark Sold</button>`
+            }
+            <button onclick="event.stopPropagation(); openViewer('${imageName}')" style="flex: 1; padding: 6px; background: var(--accent); border: none; border-radius: 6px; color: white; cursor: pointer; font-size: 0.8rem;">View 360°</button>
+          </div>
         </div>
       </div>
     `;
@@ -1080,8 +1149,8 @@ function renderResults(filter = 'all') {
 
   // Update filter buttons
   document.querySelectorAll('.filter-btn').forEach(btn => {
-    btn.classList.toggle('active', btn.textContent.toLowerCase() === filter ||
-      (filter === 'all' && btn.textContent === 'All'));
+    const btnFilter = btn.dataset.filter || btn.textContent.toLowerCase();
+    btn.classList.toggle('active', btnFilter === filter || (filter === 'all' && btn.textContent === 'All'));
   });
 }
 
@@ -1091,6 +1160,79 @@ function filterResults(category) {
 
 function formatFeature(feature) {
   return feature.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+}
+
+// ============================================
+// SCORING SYSTEM
+// ============================================
+function calculateScore(imageName) {
+  const result = analysisResults[imageName];
+  if (!result || !result.features) return 0;
+
+  let score = 0;
+  const counted = new Set(); // Don't double-count same feature type
+
+  result.features.forEach(f => {
+    if (!counted.has(f.feature)) {
+      score += FEATURE_SCORES[f.feature] || 0;
+      counted.add(f.feature);
+    }
+  });
+
+  return score;
+}
+
+function getScoreColor(score) {
+  if (score >= 60) return '#27ae60'; // Green - excellent
+  if (score >= 40) return '#f5a623'; // Orange - good
+  if (score >= 20) return '#e67e22'; // Dark orange - okay
+  return '#e74c3c'; // Red - low
+}
+
+function getScoreLabel(score) {
+  if (score >= 60) return 'Excellent';
+  if (score >= 40) return 'Good';
+  if (score >= 20) return 'Fair';
+  return 'Basic';
+}
+
+function getRankedResults() {
+  const analyzed = Object.entries(analysisResults)
+    .filter(([_, r]) => r.analyzed)
+    .map(([imageName, result]) => ({
+      imageName,
+      result,
+      score: calculateScore(imageName),
+      isSold: soldLots.has(imageName)
+    }))
+    .sort((a, b) => b.score - a.score); // Highest score first
+
+  return analyzed;
+}
+
+function getTopRecommendation() {
+  const ranked = getRankedResults().filter(r => !r.isSold);
+  return ranked.length > 0 ? ranked[0] : null;
+}
+
+function markAsSold(imageName) {
+  soldLots.add(imageName);
+  localStorage.setItem('360db-sold', JSON.stringify([...soldLots]));
+  renderResults();
+  updateStats();
+
+  // Show next recommendation
+  const next = getTopRecommendation();
+  if (next) {
+    log(`Marked ${imageName} as SOLD. Next best: ${next.imageName} (Score: ${next.score})`, 'success');
+  }
+}
+
+function unmarkSold(imageName) {
+  soldLots.delete(imageName);
+  localStorage.setItem('360db-sold', JSON.stringify([...soldLots]));
+  renderResults();
+  updateStats();
 }
 
 // ============================================
@@ -1372,6 +1514,19 @@ function loadFromLocalStorage() {
       log(`Loaded ${Object.keys(analysisResults).length} cached results`, 'info');
     } catch (e) {
       console.error('Failed to load cache:', e);
+    }
+  }
+
+  // Load sold lots
+  const savedSold = localStorage.getItem('360db-sold');
+  if (savedSold) {
+    try {
+      soldLots = new Set(JSON.parse(savedSold));
+      if (soldLots.size > 0) {
+        log(`Loaded ${soldLots.size} sold lots`, 'info');
+      }
+    } catch (e) {
+      console.error('Failed to load sold lots:', e);
     }
   }
 }
