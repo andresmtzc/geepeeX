@@ -2,14 +2,19 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>Mapbox Viewer — Instant Preloading</title>
+  <title>Mapbox Viewer — Path Smoothing</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
   <link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.css">
   <script src="https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Instrument+Sans:wght@400;600;700&display=swap" rel="stylesheet">
   <style>
-    html, body { height: 100%; margin: 0; font-family: Inter, sans-serif; overflow: hidden; background: #000; }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; font-family: 'Instrument Sans', sans-serif; overflow: hidden; background: #000; }
     #main-container { display: flex; flex-direction: column; height: 100vh; }
 
     #viewer-section { height: 50%; background: #111; position: relative; display: flex; flex-direction: column; border-bottom: 2px solid #333; }
@@ -17,8 +22,132 @@
     #viewer-body { flex-grow: 1; position: relative; background: #000; }
     #panorama { width: 100%; height: 100%; }
 
-    #map-section { height: 50%; position: relative; }
-    #map { height: 100%; width: 100%; }
+    #map-section { height: 50%; position: relative; display: flex; }
+    #left-panel {
+      width: 280px; background: linear-gradient(180deg, #1a1a1a 0%, #0f0f0f 100%);
+      border-right: 1px solid #333; overflow-y: auto; z-index: 50;
+      box-shadow: 4px 0 12px rgba(0,0,0,0.5);
+    }
+    #map { flex: 1; height: 100%; }
+
+    .panel-section {
+      border-bottom: 1px solid #2a2a2a;
+      padding: 16px;
+    }
+    .panel-section:last-child { border-bottom: none; }
+    
+    .section-title {
+      font-size: 10px; font-weight: 700; letter-spacing: 1.2px;
+      color: #666; text-transform: uppercase; margin-bottom: 12px;
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .checkbox-row {
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 0; cursor: pointer;
+      transition: background 0.15s;
+      border-radius: 4px; margin: 0 -6px; padding-left: 6px;
+    }
+    .checkbox-row:hover { background: rgba(255,255,255,0.03); }
+    
+    .checkbox-row input[type="checkbox"] {
+      width: 18px; height: 18px; cursor: pointer;
+      accent-color: #1fb6ff;
+    }
+    
+    .checkbox-row label {
+      color: #ccc; font-size: 13px; cursor: pointer;
+      user-select: none; flex: 1;
+    }
+
+    .slider-container {
+      margin: 12px 0;
+    }
+    .slider-label {
+      display: flex; justify-content: space-between;
+      font-size: 11px; color: #999; margin-bottom: 6px;
+    }
+    .slider-label .value {
+      color: #1fb6ff; font-weight: 600;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    
+    input[type="range"] {
+      width: 100%; height: 6px;
+      background: #333; border-radius: 3px;
+      outline: none; cursor: pointer;
+      -webkit-appearance: none;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none; width: 16px; height: 16px;
+      background: #1fb6ff; border-radius: 50%;
+      cursor: pointer; box-shadow: 0 2px 6px rgba(31,182,255,0.4);
+    }
+    input[type="range"]::-moz-range-thumb {
+      width: 16px; height: 16px; background: #1fb6ff;
+      border-radius: 50%; cursor: pointer; border: none;
+      box-shadow: 0 2px 6px rgba(31,182,255,0.4);
+    }
+
+    .btn {
+      width: 100%; padding: 10px 14px;
+      background: linear-gradient(135deg, #1fb6ff 0%, #0d8fd9 100%);
+      border: none; border-radius: 6px;
+      color: white; font-weight: 600; font-size: 12px;
+      cursor: pointer; margin: 8px 0;
+      transition: all 0.2s;
+      box-shadow: 0 2px 8px rgba(31,182,255,0.2);
+      font-family: 'Instrument Sans', sans-serif;
+      text-transform: uppercase; letter-spacing: 0.5px;
+    }
+    .btn:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(31,182,255,0.4);
+    }
+    .btn:active { transform: translateY(0); }
+    
+    .btn-secondary {
+      background: linear-gradient(135deg, #444 0%, #333 100%);
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    }
+    .btn-secondary:hover {
+      background: linear-gradient(135deg, #555 0%, #444 100%);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    }
+    
+    .btn-danger {
+      background: linear-gradient(135deg, #ff4444 0%, #cc0000 100%);
+      box-shadow: 0 2px 8px rgba(255,68,68,0.2);
+    }
+    .btn-danger:hover {
+      box-shadow: 0 4px 12px rgba(255,68,68,0.4);
+    }
+
+    .btn:disabled {
+      background: #2a2a2a; color: #666;
+      cursor: not-allowed; transform: none;
+      box-shadow: none;
+    }
+
+    .mode-indicator {
+      display: inline-block;
+      padding: 4px 10px; border-radius: 4px;
+      font-size: 10px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.8px;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .mode-indicator.active {
+      background: #1fb6ff; color: #000;
+      animation: pulse 2s ease-in-out infinite;
+    }
+    .mode-indicator.inactive {
+      background: #333; color: #666;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.7; }
+    }
 
     /* Compass Rose */
     #compass-container {
@@ -51,11 +180,41 @@
       border: 1px solid rgba(255,255,255,0.1);
     }
 
-    .custom-marker { width: 12px; height: 12px; border-radius: 50%; border: 2px solid white; cursor: pointer; transition: 0.2s; }
-    .custom-marker.active { background-color: #ffeb3b !important; transform: scale(1.6); border-color: #000; box-shadow: 0 0 10px #ffeb3b; z-index: 10; }
+    .custom-marker { 
+      width: 12px; height: 12px; border-radius: 50%; 
+      border: 2px solid white; cursor: pointer; transition: 0.2s; 
+    }
+    .custom-marker.active { 
+      background-color: #ffeb3b !important; transform: scale(1.6); 
+      border-color: #000; box-shadow: 0 0 10px #ffeb3b; z-index: 10; 
+    }
+    .custom-marker.projected {
+      background-color: #26a269 !important;
+      border-color: #fff;
+    }
+    
     button { background:#1fb6ff; border:none; padding:6px 14px; border-radius:4px; font-weight:bold; cursor:pointer; font-size: 12px; }
     
-    .empty-state { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #555; font-style: italic; }
+    .empty-state { 
+      height: 100%; display: flex; flex-direction: column; 
+      align-items: center; justify-content: center; 
+      color: #555; font-style: italic; 
+    }
+
+    /* Control Point Markers */
+    .control-point-marker {
+      width: 14px; height: 14px;
+      background: #ffeb3b;
+      border: 2px solid #000;
+      transform: rotate(45deg);
+      cursor: move;
+      box-shadow: 0 0 8px rgba(255,235,59,0.6);
+      transition: all 0.2s;
+    }
+    .control-point-marker:hover {
+      width: 18px; height: 18px;
+      box-shadow: 0 0 12px rgba(255,235,59,0.9);
+    }
   </style>
 </head>
 <body>
@@ -85,6 +244,73 @@
   </div>
 
   <div id="map-section">
+    <div id="left-panel">
+      <!-- VIEW CONTROLS -->
+      <div class="panel-section">
+        <div class="section-title">View Controls</div>
+        <div class="checkbox-row">
+          <input type="checkbox" id="showBlueDots" checked>
+          <label for="showBlueDots">Show Blue Dots</label>
+        </div>
+        <div class="checkbox-row">
+          <input type="checkbox" id="showBlueTrack" checked>
+          <label for="showBlueTrack">Show Blue Track</label>
+        </div>
+        <div class="checkbox-row">
+          <input type="checkbox" id="showRedTrack">
+          <label for="showRedTrack">Show Red Track</label>
+        </div>
+      </div>
+
+      <!-- SMOOTHING -->
+      <div class="panel-section">
+        <div class="section-title">Smoothing</div>
+        <div class="slider-container">
+          <div class="slider-label">
+            <span>Control Points</span>
+            <span class="value" id="cpCountValue">8</span>
+          </div>
+          <input type="range" id="cpSlider" min="3" max="20" value="8">
+        </div>
+        <button class="btn" id="generateRedBtn">Generate Red Track</button>
+        <div style="margin-top: 12px;">
+          <div class="checkbox-row">
+            <input type="checkbox" id="addCPMode">
+            <label for="addCPMode">Add CP Mode</label>
+          </div>
+          <div style="font-size: 10px; color: #666; margin-top: 4px; padding-left: 28px;">
+            Click on red line to insert control points
+          </div>
+        </div>
+      </div>
+
+      <!-- EDITING -->
+      <div class="panel-section">
+        <div class="section-title">Editing</div>
+        <button class="btn" id="projectPointsBtn" disabled>Project Points to Red</button>
+        <div style="margin: 12px 0;">
+          <div class="checkbox-row">
+            <input type="checkbox" id="dragMode">
+            <label for="dragMode">Drag Mode</label>
+          </div>
+          <div style="font-size: 10px; color: #666; margin-top: 4px; padding-left: 28px;">
+            Move dots along red curve
+          </div>
+        </div>
+        <button class="btn btn-danger" id="exportBtn" disabled>Export JSON</button>
+      </div>
+
+      <!-- STATUS -->
+      <div class="panel-section">
+        <div class="section-title">Status</div>
+        <div style="font-size: 11px; color: #999; line-height: 1.6;">
+          <div>Blue Points: <span id="blueCount" style="color: #1fb6ff; font-weight: 600;">0</span></div>
+          <div>Control Points: <span id="cpCount" style="color: #ffeb3b; font-weight: 600;">0</span></div>
+          <div>Projected: <span id="projectedCount" style="color: #26a269; font-weight: 600;">0</span></div>
+        </div>
+      </div>
+    </div>
+
     <div id="map"></div>
     
     <div id="ui-overlay">
@@ -98,7 +324,6 @@
       </div>
       <div style="margin-left:auto; text-align:right;">
         <button id="fitBtn">Recenter</button>
-        <div id="status" style="font-size:11px; margin-top:5px; color:#aaa;">Points: 0</div>
       </div>
     </div>
   </div>
@@ -119,14 +344,65 @@ let markers = {};
 let imagesByIndex = {}; 
 let currentIdx = -1;
 let panoViewer = null;
-let preloadedUrls = new Set(); // To avoid duplicate requests
+let preloadedUrls = new Set();
+
+// Smoothing state
+let controlPoints = [];
+let controlPointMarkers = [];
+let redTrackLine = null;
+let projectedPoints = [];
+let addCPModeActive = false;
+let dragModeActive = false;
+let draggedMarkerIndex = null;
 
 const GITHUB_BASE = "https://andresmtzc.github.io/geepeeX/streetview/";
 const DEFAULT_JSON = GITHUB_BASE + "trip_1769904967799.json";
 
-/* --- PRELOADING LOGIC --- */
+/* ========================
+   CATMULL-ROM SPLINE
+======================== */
+function catmullRom(p0, p1, p2, p3, t) {
+  const t2 = t * t;
+  const t3 = t2 * t;
+  
+  return [
+    0.5 * ((2 * p1[0]) +
+      (-p0[0] + p2[0]) * t +
+      (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2 +
+      (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3),
+    0.5 * ((2 * p1[1]) +
+      (-p0[1] + p2[1]) * t +
+      (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 +
+      (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3)
+  ];
+}
+
+function generateCatmullRomCurve(controlPts, segmentsPerSection = 20) {
+  if (controlPts.length < 2) return controlPts;
+  
+  const curve = [];
+  const n = controlPts.length;
+  
+  for (let i = 0; i < n - 1; i++) {
+    const p0 = i === 0 ? controlPts[i] : controlPts[i - 1];
+    const p1 = controlPts[i];
+    const p2 = controlPts[i + 1];
+    const p3 = i === n - 2 ? controlPts[i + 1] : controlPts[i + 2];
+    
+    for (let j = 0; j < segmentsPerSection; j++) {
+      const t = j / segmentsPerSection;
+      curve.push(catmullRom(p0, p1, p2, p3, t));
+    }
+  }
+  curve.push(controlPts[n - 1]);
+  
+  return curve;
+}
+
+/* ========================
+   PRELOADING
+======================== */
 function preloadNeighbors(index) {
-  // Config: Preload 3 ahead, 3 behind
   const range = 3;
   for (let i = -range; i <= range; i++) {
     if (i === 0) continue;
@@ -138,12 +414,13 @@ function preloadNeighbors(index) {
       const img = new Image();
       img.src = url;
       preloadedUrls.add(url);
-      console.log(`Preloading: ${p.index}`);
     }
   }
 }
 
-/* --- LOADERS --- */
+/* ========================
+   DATA LOADING
+======================== */
 async function loadDefaultData() {
   try {
     const response = await fetch(DEFAULT_JSON);
@@ -162,31 +439,56 @@ function processPoints(rawPoints) {
   Object.values(markers).forEach(m => m.remove());
   markers = {};
   
+  // Add blue track
   if (map.getLayer('track')) map.removeLayer('track');
   if (map.getSource('track')) map.removeSource('track');
-  map.addSource('track', { type:'geojson', data:{ type:'Feature', geometry:{ type:'LineString', coordinates: points.map(p=>[p.lon,p.lat]) }} });
-  map.addLayer({ id:'track', type:'line', source:'track', paint:{ 'line-color':'#1fb6ff','line-width':3, 'line-opacity': 0.6 }});
+  map.addSource('track', { 
+    type:'geojson', 
+    data:{ 
+      type:'Feature', 
+      geometry:{ 
+        type:'LineString', 
+        coordinates: points.map(p=>[p.lon,p.lat]) 
+      }
+    } 
+  });
+  map.addLayer({ 
+    id:'track', 
+    type:'line', 
+    source:'track', 
+    paint:{ 
+      'line-color':'#1fb6ff',
+      'line-width':3, 
+      'line-opacity': 0.7 
+    }
+  });
 
+  // Add markers
   points.forEach(p => {
     const el = document.createElement('div');
     el.className = 'custom-marker';
     el.onclick = () => openViewer(p.index);
-    markers[p.index] = new mapboxgl.Marker({ element: el }).setLngLat([p.lon, p.lat]).addTo(map);
+    el.dataset.index = p.index;
+    markers[p.index] = new mapboxgl.Marker({ element: el, draggable: false })
+      .setLngLat([p.lon, p.lat])
+      .addTo(map);
   });
 
   updateMarkerColors();
+  updateStatus();
   fitToTrack();
   if(points.length > 0) openViewer(points[0].index);
 }
 
-/* --- VIEWER --- */
+/* ========================
+   VIEWER
+======================== */
 function openViewer(pointIndex) {
   const arrIdx = points.findIndex(p => p.index === pointIndex);
   if (arrIdx === -1) return;
   currentIdx = arrIdx;
   const p = points[currentIdx];
 
-  // Map Sync
   document.querySelectorAll('.custom-marker').forEach(el => el.classList.remove('active'));
   markers[p.index].getElement().classList.add('active');
   
@@ -213,9 +515,7 @@ function openViewer(pointIndex) {
       document.getElementById('compass-rose').style.transform = `rotate(${-yaw}deg)`;
     });
 
-    // Start preloading neighbors of the current point
     preloadNeighbors(currentIdx);
-    
   } else {
     document.getElementById('panorama').style.visibility = 'hidden';
     document.getElementById('empty-msg').style.display = 'flex';
@@ -224,26 +524,266 @@ function openViewer(pointIndex) {
   map.easeTo({ center: [p.lon, p.lat], duration: 400 });
 }
 
-/* --- UI HELPERS --- */
-document.getElementById('jsonInput').onchange = async (ev) => {
-  const f = ev.target.files[0];
-  if (f) processPoints(JSON.parse(await f.text()).points);
-};
-
-document.getElementById('imagesInput').onchange = (ev) => {
-  Array.from(ev.target.files).forEach(f => {
-    const m = f.name.match(/\d+/);
-    if (m) imagesByIndex[parseInt(m[0])] = URL.createObjectURL(f);
+/* ========================
+   SMOOTHING FUNCTIONS
+======================== */
+function generateRedTrack() {
+  const cpCount = parseInt(document.getElementById('cpSlider').value);
+  
+  // Clear existing
+  clearControlPoints();
+  clearRedTrack();
+  
+  // Generate evenly distributed control points from blue track
+  const interval = Math.floor(points.length / (cpCount - 1));
+  controlPoints = [];
+  
+  for (let i = 0; i < cpCount - 1; i++) {
+    const idx = i * interval;
+    const p = points[idx];
+    controlPoints.push([p.lon, p.lat]);
+  }
+  // Add last point
+  const lastP = points[points.length - 1];
+  controlPoints.push([lastP.lon, lastP.lat]);
+  
+  // Create control point markers
+  controlPoints.forEach((cp, idx) => {
+    const el = document.createElement('div');
+    el.className = 'control-point-marker';
+    
+    const marker = new mapboxgl.Marker({ 
+      element: el, 
+      draggable: true 
+    })
+      .setLngLat(cp)
+      .addTo(map);
+    
+    marker.on('drag', () => updateRedTrack());
+    marker.on('dragend', () => updateRedTrack());
+    
+    controlPointMarkers.push(marker);
   });
-  updateMarkerColors();
-};
+  
+  updateRedTrack();
+  document.getElementById('showRedTrack').checked = true;
+  updateStatus();
+  
+  // Enable project button
+  document.getElementById('projectPointsBtn').disabled = false;
+}
 
+function updateRedTrack() {
+  // Update controlPoints array from marker positions
+  controlPoints = controlPointMarkers.map(m => {
+    const lngLat = m.getLngLat();
+    return [lngLat.lng, lngLat.lat];
+  });
+  
+  // Generate smooth curve
+  const smoothCurve = generateCatmullRomCurve(controlPoints, 30);
+  
+  // Update map layer
+  if (map.getLayer('red-track')) map.removeLayer('red-track');
+  if (map.getSource('red-track')) map.removeSource('red-track');
+  
+  map.addSource('red-track', {
+    type: 'geojson',
+    data: {
+      type: 'Feature',
+      geometry: {
+        type: 'LineString',
+        coordinates: smoothCurve
+      }
+    }
+  });
+  
+  map.addLayer({
+    id: 'red-track',
+    type: 'line',
+    source: 'red-track',
+    paint: {
+      'line-color': '#ff4444',
+      'line-width': 3,
+      'line-opacity': 0.8
+    }
+  });
+  
+  redTrackLine = turf.lineString(smoothCurve);
+  updateTrackVisibility();
+}
+
+function clearControlPoints() {
+  controlPointMarkers.forEach(m => m.remove());
+  controlPointMarkers = [];
+  controlPoints = [];
+}
+
+function clearRedTrack() {
+  if (map.getLayer('red-track')) map.removeLayer('red-track');
+  if (map.getSource('red-track')) map.removeSource('red-track');
+  redTrackLine = null;
+}
+
+/* ========================
+   POINT PROJECTION
+======================== */
+function projectPointsToRed() {
+  if (!redTrackLine) return;
+  
+  projectedPoints = points.map(p => {
+    const point = turf.point([p.lon, p.lat]);
+    const snapped = turf.nearestPointOnLine(redTrackLine, point);
+    
+    return {
+      ...p,
+      lon: snapped.geometry.coordinates[0],
+      lat: snapped.geometry.coordinates[1],
+      projected: true
+    };
+  });
+  
+  // Update marker positions
+  projectedPoints.forEach(p => {
+    if (markers[p.index]) {
+      markers[p.index].setLngLat([p.lon, p.lat]);
+      markers[p.index].getElement().classList.add('projected');
+    }
+  });
+  
+  updateStatus();
+  document.getElementById('exportBtn').disabled = false;
+  document.getElementById('dragMode').disabled = false;
+}
+
+/* ========================
+   DRAG MODE
+======================== */
+function enableDragMode() {
+  if (!redTrackLine || projectedPoints.length === 0) return;
+  
+  dragModeActive = true;
+  
+  projectedPoints.forEach((p, idx) => {
+    const marker = markers[p.index];
+    if (!marker) return;
+    
+    const el = marker.getElement();
+    el.style.cursor = 'move';
+    
+    marker.setDraggable(true);
+    
+    marker.on('drag', () => {
+      const lngLat = marker.getLngLat();
+      const point = turf.point([lngLat.lng, lngLat.lat]);
+      const snapped = turf.nearestPointOnLine(redTrackLine, point);
+      
+      // Check constraints - can't pass neighbors
+      const prevIdx = idx - 1;
+      const nextIdx = idx + 1;
+      
+      let constrainedCoord = snapped.geometry.coordinates;
+      
+      if (prevIdx >= 0 || nextIdx < projectedPoints.length) {
+        const snapDistance = turf.along(redTrackLine, snapped.properties.location, {units: 'kilometers'});
+        
+        if (prevIdx >= 0) {
+          const prevPoint = turf.point([projectedPoints[prevIdx].lon, projectedPoints[prevIdx].lat]);
+          const prevSnap = turf.nearestPointOnLine(redTrackLine, prevPoint);
+          const prevDistance = prevSnap.properties.location;
+          
+          if (snapDistance.geometry.coordinates && snapped.properties.location < prevDistance) {
+            constrainedCoord = prevSnap.geometry.coordinates;
+          }
+        }
+        
+        if (nextIdx < projectedPoints.length) {
+          const nextPoint = turf.point([projectedPoints[nextIdx].lon, projectedPoints[nextIdx].lat]);
+          const nextSnap = turf.nearestPointOnLine(redTrackLine, nextPoint);
+          const nextDistance = nextSnap.properties.location;
+          
+          if (snapDistance.geometry.coordinates && snapped.properties.location > nextDistance) {
+            constrainedCoord = nextSnap.geometry.coordinates;
+          }
+        }
+      }
+      
+      marker.setLngLat(constrainedCoord);
+      projectedPoints[idx].lon = constrainedCoord[0];
+      projectedPoints[idx].lat = constrainedCoord[1];
+    });
+  });
+}
+
+function disableDragMode() {
+  dragModeActive = false;
+  
+  projectedPoints.forEach(p => {
+    const marker = markers[p.index];
+    if (!marker) return;
+    
+    marker.setDraggable(false);
+    marker.getElement().style.cursor = 'pointer';
+  });
+}
+
+/* ========================
+   EXPORT
+======================== */
+function exportJSON() {
+  if (projectedPoints.length === 0) return;
+  
+  const exportData = {
+    points: projectedPoints.map(p => ({
+      index: p.index,
+      lat: p.lat,
+      lon: p.lon
+    }))
+  };
+  
+  const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `smoothed_trip_${Date.now()}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/* ========================
+   UI HELPERS
+======================== */
 function updateMarkerColors() {
   points.forEach(p => {
-    const el = markers[p.index].getElement();
+    const el = markers[p.index]?.getElement();
+    if (!el) return;
+    if (el.classList.contains('projected')) return;
     el.style.backgroundColor = imagesByIndex[p.index] ? '#26a269' : '#2b6df6';
   });
-  document.getElementById('status').innerText = `Points: ${points.length} | Images: ${points.filter(p => imagesByIndex[p.index]).length}`;
+}
+
+function updateStatus() {
+  document.getElementById('blueCount').textContent = points.length;
+  document.getElementById('cpCount').textContent = controlPointMarkers.length;
+  document.getElementById('projectedCount').textContent = projectedPoints.length;
+}
+
+function updateTrackVisibility() {
+  const showBlue = document.getElementById('showBlueTrack').checked;
+  const showRed = document.getElementById('showRedTrack').checked;
+  
+  map.setLayoutProperty('track', 'visibility', showBlue ? 'visible' : 'none');
+  if (map.getLayer('red-track')) {
+    map.setLayoutProperty('red-track', 'visibility', showRed ? 'visible' : 'none');
+  }
+}
+
+function updateDotsVisibility() {
+  const show = document.getElementById('showBlueDots').checked;
+  Object.values(markers).forEach(m => {
+    const el = m.getElement();
+    el.style.display = show ? 'block' : 'none';
+  });
 }
 
 function fitToTrack() {
@@ -259,9 +799,89 @@ function navigate(dir) {
   openViewer(points[next].index);
 }
 
+/* ========================
+   MAP CLICK FOR CP INSERT
+======================== */
+map.on('click', (e) => {
+  if (!addCPModeActive || !redTrackLine) return;
+  
+  const clickPoint = turf.point([e.lngLat.lng, e.lngLat.lat]);
+  const snapped = turf.nearestPointOnLine(redTrackLine, clickPoint);
+  const snapCoord = snapped.geometry.coordinates;
+  
+  // Find insertion index based on distance along line
+  const snapDistance = snapped.properties.location;
+  let insertIdx = 0;
+  
+  for (let i = 0; i < controlPoints.length - 1; i++) {
+    const cpPoint = turf.point(controlPoints[i]);
+    const cpSnap = turf.nearestPointOnLine(redTrackLine, cpPoint);
+    if (cpSnap.properties.location > snapDistance) break;
+    insertIdx = i + 1;
+  }
+  
+  // Insert control point
+  const el = document.createElement('div');
+  el.className = 'control-point-marker';
+  
+  const marker = new mapboxgl.Marker({ 
+    element: el, 
+    draggable: true 
+  })
+    .setLngLat(snapCoord)
+    .addTo(map);
+  
+  marker.on('drag', () => updateRedTrack());
+  marker.on('dragend', () => updateRedTrack());
+  
+  controlPointMarkers.splice(insertIdx, 0, marker);
+  updateRedTrack();
+  updateStatus();
+});
+
+/* ========================
+   EVENT LISTENERS
+======================== */
+document.getElementById('cpSlider').oninput = (e) => {
+  document.getElementById('cpCountValue').textContent = e.target.value;
+};
+
+document.getElementById('generateRedBtn').onclick = generateRedTrack;
+document.getElementById('projectPointsBtn').onclick = projectPointsToRed;
+document.getElementById('exportBtn').onclick = exportJSON;
+
+document.getElementById('showBlueDots').onchange = updateDotsVisibility;
+document.getElementById('showBlueTrack').onchange = updateTrackVisibility;
+document.getElementById('showRedTrack').onchange = updateTrackVisibility;
+
+document.getElementById('addCPMode').onchange = (e) => {
+  addCPModeActive = e.target.checked;
+  map.getCanvas().style.cursor = addCPModeActive ? 'crosshair' : '';
+};
+
+document.getElementById('dragMode').onchange = (e) => {
+  if (e.target.checked) {
+    enableDragMode();
+  } else {
+    disableDragMode();
+  }
+};
+
+document.getElementById('jsonInput').onchange = async (ev) => {
+  const f = ev.target.files[0];
+  if (f) processPoints(JSON.parse(await f.text()).points);
+};
+
+document.getElementById('imagesInput').onchange = (ev) => {
+  Array.from(ev.target.files).forEach(f => {
+    const m = f.name.match(/\d+/);
+    if (m) imagesByIndex[parseInt(m[0])] = URL.createObjectURL(f);
+  });
+  updateMarkerColors();
+};
+
 document.getElementById('fitBtn').onclick = fitToTrack;
 
-// KEYBOARD HANDLING
 document.addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT') return;
   const k = e.key.toLowerCase();
@@ -269,6 +889,9 @@ document.addEventListener('keydown', (e) => {
   if (k === 'm') navigate(-1);
 }, true);
 
+/* ========================
+   INIT
+======================== */
 loadDefaultData();
 
 </script>
