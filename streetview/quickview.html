@@ -1,0 +1,276 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Mapbox Viewer — Instant Preloading</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
+  <link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.css">
+  <script src="https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.js"></script>
+  <style>
+    html, body { height: 100%; margin: 0; font-family: Inter, sans-serif; overflow: hidden; background: #000; }
+    #main-container { display: flex; flex-direction: column; height: 100vh; }
+
+    #viewer-section { height: 50%; background: #111; position: relative; display: flex; flex-direction: column; border-bottom: 2px solid #333; }
+    #viewer-header { padding: 8px 15px; background: #222; color: white; display: flex; justify-content: space-between; align-items: center; font-size: 13px; z-index: 10; }
+    #viewer-body { flex-grow: 1; position: relative; background: #000; }
+    #panorama { width: 100%; height: 100%; }
+
+    #map-section { height: 50%; position: relative; }
+    #map { height: 100%; width: 100%; }
+
+    /* Compass Rose */
+    #compass-container {
+      position: absolute; bottom: 20px; right: 20px;
+      width: 85px; height: 85px; z-index: 100;
+      background: rgba(0,0,0,0.6); border-radius: 50%;
+      border: 2px solid rgba(255,255,255,0.3);
+      display: flex; align-items: center; justify-content: center;
+      backdrop-filter: blur(4px);
+    }
+    #compass-rose { position: relative; width: 100%; height: 100%; transition: transform 0.05s linear; }
+    .compass-btn {
+      position: absolute; width: 26px; height: 26px;
+      display: flex; align-items: center; justify-content: center;
+      color: white; font-weight: bold; cursor: pointer;
+      background: rgba(31, 182, 255, 0.2); border-radius: 4px; border: 1px solid rgba(255,255,255,0.2);
+    }
+    .compass-btn:hover { background: #1fb6ff; color: black; }
+    .nav-forward { top: 4px; left: 50%; transform: translateX(-50%); }
+    .nav-backward { bottom: 4px; left: 50%; transform: translateX(-50%); }
+    #north-pointer {
+      position: absolute; top: 0; left: 50%; transform: translateX(-50%);
+      width: 0; height: 0; border-left: 7px solid transparent; border-right: 7px solid transparent; border-bottom: 14px solid #ff4444;
+    }
+
+    #ui-overlay { 
+      position: absolute; bottom: 10px; left: 10px; right: 10px;
+      background: rgba(0,0,0,0.85); padding: 12px; border-radius: 8px;
+      display: flex; gap: 20px; align-items: center; color: white; z-index: 20;
+      border: 1px solid rgba(255,255,255,0.1);
+    }
+
+    .custom-marker { width: 12px; height: 12px; border-radius: 50%; border: 2px solid white; cursor: pointer; transition: 0.2s; }
+    .custom-marker.active { background-color: #ffeb3b !important; transform: scale(1.6); border-color: #000; box-shadow: 0 0 10px #ffeb3b; z-index: 10; }
+    button { background:#1fb6ff; border:none; padding:6px 14px; border-radius:4px; font-weight:bold; cursor:pointer; font-size: 12px; }
+    
+    .empty-state { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #555; font-style: italic; }
+  </style>
+</head>
+<body>
+
+<div id="main-container">
+  <div id="viewer-section">
+    <div id="viewer-header">
+      <div><b id="viewer-title">Street View</b> <span id="viewer-meta" style="margin-left:10px; opacity:0.7;"></span></div>
+      <div id="preloading-indicator" style="font-size:10px; color:#888;">Cache Ready</div>
+    </div>
+    
+    <div id="viewer-body">
+      <div id="panorama"></div>
+      
+      <div id="compass-container">
+        <div id="compass-rose">
+          <div id="north-pointer"></div>
+          <div class="compass-btn nav-forward" onclick="navigate(1)">▲</div>
+          <div class="compass-btn nav-backward" onclick="navigate(-1)">▼</div>
+        </div>
+      </div>
+
+      <div id="empty-msg" class="empty-state">
+        <p>Connecting to GitHub assets...</p>
+      </div>
+    </div>
+  </div>
+
+  <div id="map-section">
+    <div id="map"></div>
+    
+    <div id="ui-overlay">
+      <div style="display:flex; flex-direction:column; gap:4px;">
+        <label style="font-size:10px; font-weight:bold; color:#1fb6ff;">MANUAL JSON</label>
+        <input id="jsonInput" type="file" accept=".json" style="font-size:11px;"/>
+      </div>
+      <div style="display:flex; flex-direction:column; gap:4px;">
+        <label style="font-size:10px; font-weight:bold; color:#1fb6ff;">MANUAL IMAGES</label>
+        <input id="imagesInput" type="file" webkitdirectory directory multiple style="font-size:11px;"/>
+      </div>
+      <div style="margin-left:auto; text-align:right;">
+        <button id="fitBtn">Recenter</button>
+        <div id="status" style="font-size:11px; margin-top:5px; color:#aaa;">Points: 0</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+mapboxgl.accessToken = "pk.eyJ1IjoiYW5kcmVzbXR6YyIsImEiOiJjbWl5eWQ0a2gwbDRlM2RweTN6ZXY1MmRsIn0.RDhU90VJPV_Bcjt1tab-MQ";
+
+const map = new mapboxgl.Map({
+  container: 'map',
+  style: 'mapbox://styles/mapbox/satellite-streets-v12',
+  center: [-100.3483, 25.6752],
+  zoom: 15
+});
+
+let points = [];
+let markers = {};
+let imagesByIndex = {}; 
+let currentIdx = -1;
+let panoViewer = null;
+let preloadedUrls = new Set(); // To avoid duplicate requests
+
+const GITHUB_BASE = "https://andresmtzc.github.io/geepeeX/streetview/";
+const DEFAULT_JSON = GITHUB_BASE + "trip_1769904967799.json";
+
+/* --- PRELOADING LOGIC --- */
+function preloadNeighbors(index) {
+  // Config: Preload 3 ahead, 3 behind
+  const range = 3;
+  for (let i = -range; i <= range; i++) {
+    if (i === 0) continue;
+    let neighborIdx = (index + i + points.length) % points.length;
+    let p = points[neighborIdx];
+    let url = imagesByIndex[p.index];
+    
+    if (url && !preloadedUrls.has(url)) {
+      const img = new Image();
+      img.src = url;
+      preloadedUrls.add(url);
+      console.log(`Preloading: ${p.index}`);
+    }
+  }
+}
+
+/* --- LOADERS --- */
+async function loadDefaultData() {
+  try {
+    const response = await fetch(DEFAULT_JSON);
+    const data = await response.json();
+    data.points.forEach(p => {
+      imagesByIndex[p.index] = `${GITHUB_BASE}img${p.index}.jpg`;
+    });
+    processPoints(data.points);
+  } catch (err) {
+    document.getElementById('empty-msg').innerHTML = "<p>Fetch failed. Load local files.</p>";
+  }
+}
+
+function processPoints(rawPoints) {
+  points = rawPoints.sort((a,b) => a.index - b.index);
+  Object.values(markers).forEach(m => m.remove());
+  markers = {};
+  
+  if (map.getLayer('track')) map.removeLayer('track');
+  if (map.getSource('track')) map.removeSource('track');
+  map.addSource('track', { type:'geojson', data:{ type:'Feature', geometry:{ type:'LineString', coordinates: points.map(p=>[p.lon,p.lat]) }} });
+  map.addLayer({ id:'track', type:'line', source:'track', paint:{ 'line-color':'#1fb6ff','line-width':3, 'line-opacity': 0.6 }});
+
+  points.forEach(p => {
+    const el = document.createElement('div');
+    el.className = 'custom-marker';
+    el.onclick = () => openViewer(p.index);
+    markers[p.index] = new mapboxgl.Marker({ element: el }).setLngLat([p.lon, p.lat]).addTo(map);
+  });
+
+  updateMarkerColors();
+  fitToTrack();
+  if(points.length > 0) openViewer(points[0].index);
+}
+
+/* --- VIEWER --- */
+function openViewer(pointIndex) {
+  const arrIdx = points.findIndex(p => p.index === pointIndex);
+  if (arrIdx === -1) return;
+  currentIdx = arrIdx;
+  const p = points[currentIdx];
+
+  // Map Sync
+  document.querySelectorAll('.custom-marker').forEach(el => el.classList.remove('active'));
+  markers[p.index].getElement().classList.add('active');
+  
+  document.getElementById('viewer-title').textContent = `Point #${p.index}`;
+  document.getElementById('viewer-meta').textContent = `(${currentIdx + 1} / ${points.length})`;
+
+  if (panoViewer) panoViewer.destroy();
+  
+  const imgUrl = imagesByIndex[p.index];
+  if (imgUrl) {
+    document.getElementById('empty-msg').style.display = 'none';
+    document.getElementById('panorama').style.visibility = 'visible';
+    
+    panoViewer = pannellum.viewer('panorama', {
+      type: 'equirectangular',
+      panorama: imgUrl,
+      autoLoad: true,
+      showControls: false,
+      yaw: 0
+    });
+
+    panoViewer.on('render', () => {
+      const yaw = panoViewer.getYaw();
+      document.getElementById('compass-rose').style.transform = `rotate(${-yaw}deg)`;
+    });
+
+    // Start preloading neighbors of the current point
+    preloadNeighbors(currentIdx);
+    
+  } else {
+    document.getElementById('panorama').style.visibility = 'hidden';
+    document.getElementById('empty-msg').style.display = 'flex';
+  }
+  
+  map.easeTo({ center: [p.lon, p.lat], duration: 400 });
+}
+
+/* --- UI HELPERS --- */
+document.getElementById('jsonInput').onchange = async (ev) => {
+  const f = ev.target.files[0];
+  if (f) processPoints(JSON.parse(await f.text()).points);
+};
+
+document.getElementById('imagesInput').onchange = (ev) => {
+  Array.from(ev.target.files).forEach(f => {
+    const m = f.name.match(/\d+/);
+    if (m) imagesByIndex[parseInt(m[0])] = URL.createObjectURL(f);
+  });
+  updateMarkerColors();
+};
+
+function updateMarkerColors() {
+  points.forEach(p => {
+    const el = markers[p.index].getElement();
+    el.style.backgroundColor = imagesByIndex[p.index] ? '#26a269' : '#2b6df6';
+  });
+  document.getElementById('status').innerText = `Points: ${points.length} | Images: ${points.filter(p => imagesByIndex[p.index]).length}`;
+}
+
+function fitToTrack() {
+  if (!points.length) return;
+  const b = new mapboxgl.LngLatBounds();
+  points.forEach(p => b.extend([p.lon, p.lat]));
+  map.fitBounds(b, { padding: 50 });
+}
+
+function navigate(dir) {
+  if (!points.length) return;
+  let next = (currentIdx + dir + points.length) % points.length;
+  openViewer(points[next].index);
+}
+
+document.getElementById('fitBtn').onclick = fitToTrack;
+
+// KEYBOARD HANDLING
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT') return;
+  const k = e.key.toLowerCase();
+  if (k === 'n') navigate(1);
+  if (k === 'm') navigate(-1);
+}, true);
+
+loadDefaultData();
+
+</script>
+</body>
+</html>
