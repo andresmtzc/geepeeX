@@ -260,18 +260,15 @@
           <input type="checkbox" id="showRedTrack">
           <label for="showRedTrack">Show Red Track</label>
         </div>
+        <div class="checkbox-row">
+          <input type="checkbox" id="showControlPoints" checked>
+          <label for="showControlPoints">Show Diamond CPs</label>
+        </div>
       </div>
 
       <!-- SMOOTHING -->
       <div class="panel-section">
         <div class="section-title">Smoothing</div>
-        <div class="slider-container">
-          <div class="slider-label">
-            <span>Control Points</span>
-            <span class="value" id="cpCountValue">8</span>
-          </div>
-          <input type="range" id="cpSlider" min="3" max="20" value="8">
-        </div>
         <button class="btn" id="generateRedBtn">Generate Red Track</button>
         <div style="margin-top: 12px;">
           <div class="checkbox-row">
@@ -280,6 +277,15 @@
           </div>
           <div style="font-size: 10px; color: #666; margin-top: 4px; padding-left: 28px;">
             Click on red line to insert control points
+          </div>
+        </div>
+        <div style="margin-top: 12px;">
+          <div class="checkbox-row">
+            <input type="checkbox" id="removeCPMode">
+            <label for="removeCPMode">Remove CP Mode</label>
+          </div>
+          <div style="font-size: 10px; color: #666; margin-top: 4px; padding-left: 28px;">
+            Click on diamonds to remove them
           </div>
         </div>
       </div>
@@ -352,6 +358,7 @@ let controlPointMarkers = [];
 let redTrackLine = null;
 let projectedPoints = [];
 let addCPModeActive = false;
+let removeCPModeActive = false;
 let dragModeActive = false;
 let draggedMarkerIndex = null;
 
@@ -528,24 +535,28 @@ function openViewer(pointIndex) {
    SMOOTHING FUNCTIONS
 ======================== */
 function generateRedTrack() {
-  const cpCount = parseInt(document.getElementById('cpSlider').value);
+  const cpCount = 8; // Fixed to 8 control points
   
   // Clear existing
   clearControlPoints();
   clearRedTrack();
   
-  // Generate evenly distributed control points from blue track
-  const interval = Math.floor(points.length / (cpCount - 1));
+  // Generate control points from every Nth original point
+  const step = Math.floor(points.length / (cpCount - 1));
   controlPoints = [];
   
-  for (let i = 0; i < cpCount - 1; i++) {
-    const idx = i * interval;
-    const p = points[idx];
+  for (let i = 0; i < points.length; i += step) {
+    const p = points[i];
     controlPoints.push([p.lon, p.lat]);
+    if (controlPoints.length >= cpCount - 1) break;
   }
-  // Add last point
+  
+  // Always add the last point
   const lastP = points[points.length - 1];
-  controlPoints.push([lastP.lon, lastP.lat]);
+  const lastCP = controlPoints[controlPoints.length - 1];
+  if (!lastCP || lastCP[0] !== lastP.lon || lastCP[1] !== lastP.lat) {
+    controlPoints.push([lastP.lon, lastP.lat]);
+  }
   
   // Create control point markers
   controlPoints.forEach((cp, idx) => {
@@ -558,6 +569,20 @@ function generateRedTrack() {
     })
       .setLngLat(cp)
       .addTo(map);
+    
+    // Add click handler for removal
+    el.onclick = (e) => {
+      if (removeCPModeActive && controlPointMarkers.length > 3) {
+        e.stopPropagation();
+        const markerIdx = controlPointMarkers.indexOf(marker);
+        if (markerIdx > -1) {
+          marker.remove();
+          controlPointMarkers.splice(markerIdx, 1);
+          updateRedTrack();
+          updateStatus();
+        }
+      }
+    };
     
     marker.on('drag', () => updateRedTrack());
     marker.on('dragend', () => updateRedTrack());
@@ -631,17 +656,47 @@ function clearRedTrack() {
 function projectPointsToRed() {
   if (!redTrackLine) return;
   
-  projectedPoints = points.map(p => {
-    const point = turf.point([p.lon, p.lat]);
-    const snapped = turf.nearestPointOnLine(redTrackLine, point);
+  console.log('Starting projection...');
+  
+  // Calculate total length of blue track
+  const blueTrack = turf.lineString(points.map(p => [p.lon, p.lat]));
+  const blueTotalLength = turf.length(blueTrack, {units: 'kilometers'});
+  
+  // Calculate total length of red track
+  const redTotalLength = turf.length(redTrackLine, {units: 'kilometers'});
+  
+  console.log('Blue length:', blueTotalLength, 'Red length:', redTotalLength);
+  
+  projectedPoints = [];
+  
+  let cumulativeBlueDistance = 0;
+  
+  points.forEach((p, idx) => {
+    // Calculate distance along blue track for this point
+    if (idx > 0) {
+      const prevP = points[idx - 1];
+      const segment = turf.lineString([[prevP.lon, prevP.lat], [p.lon, p.lat]]);
+      const segmentLength = turf.length(segment, {units: 'kilometers'});
+      cumulativeBlueDistance += segmentLength;
+    }
     
-    return {
+    // Calculate percentage along blue track
+    const percentage = blueTotalLength > 0 ? cumulativeBlueDistance / blueTotalLength : 0;
+    
+    // Find corresponding position on red track
+    const redDistance = percentage * redTotalLength;
+    const pointOnRed = turf.along(redTrackLine, redDistance, {units: 'kilometers'});
+    
+    projectedPoints.push({
       ...p,
-      lon: snapped.geometry.coordinates[0],
-      lat: snapped.geometry.coordinates[1],
-      projected: true
-    };
+      lon: pointOnRed.geometry.coordinates[0],
+      lat: pointOnRed.geometry.coordinates[1],
+      projected: true,
+      redDistance: redDistance
+    });
   });
+  
+  console.log('Projected', projectedPoints.length, 'points');
   
   // Update marker positions
   projectedPoints.forEach(p => {
@@ -663,6 +718,7 @@ function enableDragMode() {
   if (!redTrackLine || projectedPoints.length === 0) return;
   
   dragModeActive = true;
+  const redTotalLength = turf.length(redTrackLine, {units: 'kilometers'});
   
   projectedPoints.forEach((p, idx) => {
     const marker = markers[p.index];
@@ -678,39 +734,35 @@ function enableDragMode() {
       const point = turf.point([lngLat.lng, lngLat.lat]);
       const snapped = turf.nearestPointOnLine(redTrackLine, point);
       
-      // Check constraints - can't pass neighbors
+      // Get distance along red track
+      let snapDistance = snapped.properties.location;
+      
+      // Apply constraints - can't pass neighbors
       const prevIdx = idx - 1;
       const nextIdx = idx + 1;
       
-      let constrainedCoord = snapped.geometry.coordinates;
-      
-      if (prevIdx >= 0 || nextIdx < projectedPoints.length) {
-        const snapDistance = turf.along(redTrackLine, snapped.properties.location, {units: 'kilometers'});
-        
-        if (prevIdx >= 0) {
-          const prevPoint = turf.point([projectedPoints[prevIdx].lon, projectedPoints[prevIdx].lat]);
-          const prevSnap = turf.nearestPointOnLine(redTrackLine, prevPoint);
-          const prevDistance = prevSnap.properties.location;
-          
-          if (snapDistance.geometry.coordinates && snapped.properties.location < prevDistance) {
-            constrainedCoord = prevSnap.geometry.coordinates;
-          }
-        }
-        
-        if (nextIdx < projectedPoints.length) {
-          const nextPoint = turf.point([projectedPoints[nextIdx].lon, projectedPoints[nextIdx].lat]);
-          const nextSnap = turf.nearestPointOnLine(redTrackLine, nextPoint);
-          const nextDistance = nextSnap.properties.location;
-          
-          if (snapDistance.geometry.coordinates && snapped.properties.location > nextDistance) {
-            constrainedCoord = nextSnap.geometry.coordinates;
-          }
+      if (prevIdx >= 0) {
+        const prevDistance = projectedPoints[prevIdx].redDistance;
+        if (snapDistance < prevDistance) {
+          snapDistance = prevDistance;
         }
       }
+      
+      if (nextIdx < projectedPoints.length) {
+        const nextDistance = projectedPoints[nextIdx].redDistance;
+        if (snapDistance > nextDistance) {
+          snapDistance = nextDistance;
+        }
+      }
+      
+      // Get point at constrained distance
+      const constrainedPoint = turf.along(redTrackLine, snapDistance, {units: 'kilometers'});
+      const constrainedCoord = constrainedPoint.geometry.coordinates;
       
       marker.setLngLat(constrainedCoord);
       projectedPoints[idx].lon = constrainedCoord[0];
       projectedPoints[idx].lat = constrainedCoord[1];
+      projectedPoints[idx].redDistance = snapDistance;
     });
   });
 }
@@ -786,6 +838,14 @@ function updateDotsVisibility() {
   });
 }
 
+function updateControlPointsVisibility() {
+  const show = document.getElementById('showControlPoints').checked;
+  controlPointMarkers.forEach(m => {
+    const el = m.getElement();
+    el.style.display = show ? 'block' : 'none';
+  });
+}
+
 function fitToTrack() {
   if (!points.length) return;
   const b = new mapboxgl.LngLatBounds();
@@ -831,6 +891,20 @@ map.on('click', (e) => {
     .setLngLat(snapCoord)
     .addTo(map);
   
+  // Add click handler for removal
+  el.onclick = (e) => {
+    if (removeCPModeActive && controlPointMarkers.length > 3) {
+      e.stopPropagation();
+      const markerIdx = controlPointMarkers.indexOf(marker);
+      if (markerIdx > -1) {
+        marker.remove();
+        controlPointMarkers.splice(markerIdx, 1);
+        updateRedTrack();
+        updateStatus();
+      }
+    }
+  };
+  
   marker.on('drag', () => updateRedTrack());
   marker.on('dragend', () => updateRedTrack());
   
@@ -842,10 +916,6 @@ map.on('click', (e) => {
 /* ========================
    EVENT LISTENERS
 ======================== */
-document.getElementById('cpSlider').oninput = (e) => {
-  document.getElementById('cpCountValue').textContent = e.target.value;
-};
-
 document.getElementById('generateRedBtn').onclick = generateRedTrack;
 document.getElementById('projectPointsBtn').onclick = projectPointsToRed;
 document.getElementById('exportBtn').onclick = exportJSON;
@@ -856,8 +926,27 @@ document.getElementById('showRedTrack').onchange = updateTrackVisibility;
 
 document.getElementById('addCPMode').onchange = (e) => {
   addCPModeActive = e.target.checked;
+  if (addCPModeActive && removeCPModeActive) {
+    document.getElementById('removeCPMode').checked = false;
+    removeCPModeActive = false;
+  }
   map.getCanvas().style.cursor = addCPModeActive ? 'crosshair' : '';
 };
+
+document.getElementById('removeCPMode').onchange = (e) => {
+  removeCPModeActive = e.target.checked;
+  if (removeCPModeActive && addCPModeActive) {
+    document.getElementById('addCPMode').checked = false;
+    addCPModeActive = false;
+    map.getCanvas().style.cursor = '';
+  }
+  // Update cursor for control points
+  controlPointMarkers.forEach(m => {
+    m.getElement().style.cursor = removeCPModeActive ? 'pointer' : 'move';
+  });
+};
+
+document.getElementById('showControlPoints').onchange = updateControlPointsVisibility;
 
 document.getElementById('dragMode').onchange = (e) => {
   if (e.target.checked) {
@@ -891,7 +980,7 @@ document.addEventListener('keydown', (e) => {
 
 /* ========================
    INIT
-======================== */
+======================== */ 
 loadDefaultData();
 
 </script>
