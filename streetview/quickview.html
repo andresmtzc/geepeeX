@@ -95,18 +95,7 @@
       color: white; z-index: 20; border: 1px solid rgba(255,255,255,0.1);
     }
 
-    /* Compass */
-    #compass-container {
-      position: absolute; bottom: 20px; right: 20px;
-      width: 85px; height: 85px; z-index: 100;
-      background: rgba(0,0,0,0.6); border-radius: 50%;
-      display: flex; align-items: center; justify-content: center;
-    }
-    #compass-rose { position: relative; width: 100%; height: 100%; transition: transform 0.05s linear; }
-    #north-pointer {
-      position: absolute; top: 0; left: 50%; transform: translateX(-50%);
-      border-left: 7px solid transparent; border-right: 7px solid transparent; border-bottom: 14px solid #ff4444;
-    }
+
   </style>
 </head>
 <body>
@@ -118,9 +107,6 @@
     </div>
     <div id="viewer-body">
       <div id="panorama"></div>
-      <div id="compass-container">
-        <div id="compass-rose"><div id="north-pointer"></div></div>
-      </div>
       <div id="empty-msg" style="height:100%; display:flex; justify-content:center; align-items:center; color:#555;">Loading...</div>
     </div>
   </div>
@@ -644,11 +630,7 @@ function openViewer(id) {
   if(imagesByIndex[id]) {
     panoViewer = pannellum.viewer('panorama', {
       type: 'equirectangular', panorama: imagesByIndex[id],
-      autoLoad: true, showControls: false
-    });
-    panoViewer.on('render', () => {
-      const yaw = panoViewer.getYaw();
-      document.getElementById('compass-rose').style.transform = `rotate(${-yaw}deg)`;
+      autoLoad: true, showControls: true, compass: true,
     });
   }
   
